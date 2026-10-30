@@ -1,7 +1,7 @@
 // forge init: installs the agents and skills into a project's .claude folder, the merge gate
 // workflow, and factory.config.yml.
 
-import { copyFileSync, existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CONFIG_FILE } from './config.js';
@@ -64,5 +64,23 @@ export function init(target: string, opts: { force?: boolean; repo?: string; sou
     '',
   ].join('\n');
   place('', join(target, CONFIG_FILE), config);
+  if (addGuardHook(join(target, '.claude', 'settings.json'))) result.written.push(join('.claude', 'settings.json'));
   return result;
+}
+
+export const GUARD_COMMAND = 'forge guard';
+
+// The project's settings get a PreToolUse hook on Bash that runs `forge guard`. Settings
+// hooks also fire inside subagents, so the reviewer and security stay read-only however
+// they were started. Merged into what is there; returns false when it was already there.
+export function addGuardHook(file: string): boolean {
+  type Hook = { type: string; command: string };
+  type Settings = { hooks?: Record<string, Array<{ matcher?: string; hooks: Hook[] }>>; [k: string]: unknown };
+  const settings: Settings = existsSync(file) ? (JSON.parse(readFileSync(file, 'utf8')) as Settings) : {};
+  const pre = ((settings.hooks ??= {}).PreToolUse ??= []);
+  if (pre.some((m) => m.hooks.some((h) => h.command === GUARD_COMMAND))) return false;
+  pre.push({ matcher: 'Bash', hooks: [{ type: 'command', command: GUARD_COMMAND }] });
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, `${JSON.stringify(settings, null, 2)}\n`);
+  return true;
 }

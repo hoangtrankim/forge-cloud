@@ -466,7 +466,8 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   if (argv[0] === 'guard') {
     let input = '';
     for await (const chunk of process.stdin) input += chunk;
-    // The role comes from --role (an agent file's own hook) or FACTORY_ROLE (the runner).
+    // The role comes from --role (an agent file's own hook), FACTORY_ROLE (the runner) or,
+    // with neither, the subagent type on the event (the project settings hook).
     const i = argv.indexOf('--role');
     const r = runGuard(input, i > 0 ? argv[i + 1] : process.env.FACTORY_ROLE);
     if (r.message) console.error(r.message);

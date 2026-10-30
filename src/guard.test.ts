@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { checkCommand, parse, runGuard } from './guard.js';
+import { checkCommand, parse, roleOfAgentType, runGuard } from './guard.js';
 
 const repo = '/Users/hoang/todo-app';
 const ok = (cmd: string, cwd = repo) => expect(checkCommand(cmd, 'reviewer', cwd), cmd).toEqual({ ok: true });
@@ -76,6 +76,28 @@ describe('guard', () => {
     expect(runGuard(event('git push'), 'reviewer')).toMatchObject({ code: 2, message: expect.stringContaining('read-only') });
     expect(runGuard(event('git push'), undefined)).toEqual({ code: 0 });
     expect(runGuard('not json', 'reviewer').code).toBe(2);
+    expect(runGuard('not json', undefined)).toEqual({ code: 0 });
     expect(runGuard(JSON.stringify({ tool_name: 'Read', tool_input: {} }), 'reviewer')).toEqual({ code: 0 });
+  });
+});
+
+describe('the project settings hook', () => {
+  const sub = (command: string, agent_type?: string) =>
+    JSON.stringify({ tool_name: 'Bash', tool_input: { command }, cwd: '/repo', agent_type });
+
+  it('knows the guarded roles by their subagent type', () => {
+    expect(roleOfAgentType('factory-reviewer')).toBe('reviewer');
+    expect(roleOfAgentType('factory-security')).toBe('security');
+    expect(roleOfAgentType('factory-builder')).toBeUndefined();
+    expect(roleOfAgentType('general-purpose')).toBeUndefined();
+    expect(roleOfAgentType(undefined)).toBeUndefined();
+  });
+
+  it('blocks a write from the reviewer and security subagents only', () => {
+    expect(runGuard(sub('touch server.js', 'factory-reviewer'), undefined).code).toBe(2);
+    expect(runGuard(sub('git push', 'factory-security'), undefined).code).toBe(2);
+    expect(runGuard(sub('git status', 'factory-reviewer'), undefined)).toEqual({ code: 0 });
+    expect(runGuard(sub('touch server.js', 'factory-builder'), undefined)).toEqual({ code: 0 });
+    expect(runGuard(sub('touch server.js'), undefined)).toEqual({ code: 0 });
   });
 });

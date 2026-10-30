@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { loadConfig } from './config.js';
-import { init } from './init.js';
+import { addGuardHook, init } from './init.js';
 
 const tmp = () => mkdtempSync(join(tmpdir(), 'factory-init-'));
 
@@ -29,6 +29,19 @@ describe('init', () => {
     // Rules only: no agent runs here, so no Claude login either.
     expect(workflow).not.toMatch(/CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY|claude -p/);
     expect(loadConfig(dir).reviewStatus).toBe('gate');
+  });
+
+  it('adds the guard hook to the project settings once, keeping what is there', () => {
+    const dir = tmp();
+    mkdirSync(join(dir, '.claude'), { recursive: true });
+    const file = join(dir, '.claude/settings.json');
+    writeFileSync(file, JSON.stringify({ permissions: { allow: ['Bash(npm test)'] } }));
+    expect(init(dir).written).toContain('.claude/settings.json');
+    const settings = JSON.parse(readFileSync(file, 'utf8'));
+    expect(settings.permissions).toEqual({ allow: ['Bash(npm test)'] });
+    expect(settings.hooks.PreToolUse).toEqual([{ matcher: 'Bash', hooks: [{ type: 'command', command: 'forge guard' }] }]);
+    expect(addGuardHook(file)).toBe(false);
+    expect(JSON.parse(readFileSync(file, 'utf8')).hooks.PreToolUse).toHaveLength(1);
   });
 
   it('keeps existing files unless forced', () => {

@@ -11,7 +11,7 @@ Two parts, so that no Claude session ever merges its own work:
 
 Set `reviewStatus: gate` in `factory.config.yml` (what `forge init` writes): the reviewer's pass then only records the reviewed commit, and the gate posts the required `factory/review` status just before it merges. A cloud session cannot write commit statuses.
 
-The reviewer and security agents carry their own `forge guard --role <role>` hook in their frontmatter, so they stay read-only as subagents too.
+The reviewer and security stay read-only as subagents: `forge init` adds a `forge guard` PreToolUse hook on Bash to the project's `.claude/settings.json`, which fires inside every subagent and picks the role from the subagent's type (`factory-reviewer`, `factory-security`). Their agent files also carry `forge guard --role <role>` in their frontmatter. The session loop never runs those two as general-purpose subagents, since a guard can't tell them apart from any other.
 
 ### Set up a repo
 
