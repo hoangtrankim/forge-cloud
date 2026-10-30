@@ -18,7 +18,13 @@ export interface Config {
   claudeArgs?: string[];
   // How the factory merges a green, reviewed PR (default: merge).
   mergeMethod: MergeMethod;
+  // Who posts the factory/review commit status: the reviewer's pass (default), or the merge
+  // gate right before it merges, for dispatchers that cannot write statuses (a cloud session).
+  reviewStatus: ReviewStatusBy;
 }
+
+export type ReviewStatusBy = 'reviewer' | 'gate';
+const REVIEW_STATUS_BY: readonly ReviewStatusBy[] = ['reviewer', 'gate'];
 
 export const CONFIG_FILE = 'factory.config.yml';
 
@@ -44,6 +50,10 @@ export function loadConfig(dir = process.cwd()): Config {
   if (!MERGE_METHODS.includes(mergeMethod as MergeMethod)) {
     throw new Error(`${CONFIG_FILE}: mergeMethod must be one of ${MERGE_METHODS.join(', ')}`);
   }
+  const reviewStatus = raw.reviewStatus ?? 'reviewer';
+  if (!REVIEW_STATUS_BY.includes(reviewStatus as ReviewStatusBy)) {
+    throw new Error(`${CONFIG_FILE}: reviewStatus must be one of ${REVIEW_STATUS_BY.join(', ')}`);
+  }
   return {
     repo: typeof raw.repo === 'string' ? raw.repo : undefined,
     maxRounds,
@@ -51,6 +61,7 @@ export function loadConfig(dir = process.cwd()): Config {
     components,
     claudeArgs: Array.isArray(raw.claudeArgs) ? raw.claudeArgs.map(String) : undefined,
     mergeMethod: mergeMethod as MergeMethod,
+    reviewStatus: reviewStatus as ReviewStatusBy,
   };
 }
 

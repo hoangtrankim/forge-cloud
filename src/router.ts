@@ -126,31 +126,39 @@ const byPriority = (a: Ticket, b: Ticket) => a.priority - b.priority || a.id - b
 
 // `skip` holds "agent:ticket" keys the dispatcher has given up on (an agent run changed nothing).
 export function route(s: Snapshot, skip: ReadonlySet<string> = new Set()): Step | undefined {
-  const allowed = (step: Step) => step.kind !== 'agent' || !skip.has(`${step.agent}:${step.ticket}`);
+  return routeAll(s, skip)[0];
+}
+
+// Every step that could run now, in routing order, at most one per ticket. The first is what
+// `route` picks; a session dispatcher runs agent steps from this list, and the gate runs the rest.
+export function routeAll(s: Snapshot, skip: ReadonlySet<string> = new Set()): Step[] {
+  const steps: Step[] = [];
+  const taken = new Set<number>();
+  const add = (step: Step) => {
+    if (taken.has(step.ticket) || (step.kind === 'agent' && skip.has(`${step.agent}:${step.ticket}`))) return;
+    taken.add(step.ticket);
+    steps.push(step);
+  };
 
   // A new spec is split before anything else, so its tickets join the queue.
   for (const { spec, status } of [...s.specs].sort((a, b) => byPriority(a.spec, b.spec))) {
     if (spec.closed || status.uncovered.length === 0) continue;
-    const step: Step = { kind: 'agent', agent: 'planner', ticket: spec.id, prompt: `Split spec ${spec.id}.`, rule: 'split-spec' };
-    if (allowed(step)) return step;
+    add({ kind: 'agent', agent: 'planner', ticket: spec.id, prompt: `Split spec ${spec.id}.`, rule: 'split-spec' });
   }
 
   const done = new Set(s.tickets.filter((t) => t.closed || t.state === 'done').map((t) => t.id));
   const tickets = [...s.tickets].sort(byPriority);
   for (const rule of ROUTES) {
     for (const t of tickets) {
-      if (!rule.match(t, s, done)) continue;
-      const step = rule.step(t);
-      if (allowed(step)) return step;
+      if (rule.match(t, s, done)) add(rule.step(t));
     }
   }
 
   for (const { spec, status } of s.specs) {
     if (spec.closed || status.criteria.length === 0 || status.uncovered.length || status.openTickets.length) continue;
-    const step: Step = { kind: 'agent', agent: 'planner', ticket: spec.id, prompt: `Close spec ${spec.id}.`, rule: 'close-spec' };
-    if (allowed(step)) return step;
+    add({ kind: 'agent', agent: 'planner', ticket: spec.id, prompt: `Close spec ${spec.id}.`, rule: 'close-spec' });
   }
-  return undefined;
+  return steps;
 }
 
 // Tickets that wait on the owner rather than an agent, for the dispatcher's report.

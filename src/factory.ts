@@ -27,6 +27,7 @@ import {
   type TicketType,
 } from './lifecycle.js';
 import type { CodeHost, MergeMethod, PullRequest } from './codehost.js';
+import type { ReviewStatusBy } from './config.js';
 import type { Comment, Tracker } from './tracker/tracker.js';
 
 export class RuleError extends Error {}
@@ -53,6 +54,9 @@ export interface FactoryOptions {
   codeHost?: CodeHost;
   baseBranch?: string;
   mergeMethod?: MergeMethod;
+  // 'gate': the reviewer's pass only records the reviewed commit, and merge() posts the
+  // factory/review status just before it merges (see Config.reviewStatus).
+  reviewStatus?: ReviewStatusBy;
 }
 
 export interface CreateInput {
@@ -152,7 +156,7 @@ export class Factory {
     if (!escalated && next.round !== ticket.round) text += ` (round ${next.round} of ${this.maxRounds})`;
     if (input.note) text += `\n\n${input.note}`;
     await this.tracker.comment(id, text);
-    if (saved.state === 'in-qa' && saved.reviewedSha && this.opts.codeHost) {
+    if (saved.state === 'in-qa' && saved.reviewedSha && this.opts.codeHost && this.opts.reviewStatus !== 'gate') {
       await this.opts.codeHost.setStatus(saved.reviewedSha, REVIEW_STATUS, 'success', `Reviewed as ticket #${id}`);
     }
 
@@ -270,6 +274,10 @@ export class Factory {
     const checks = pr.merged ? [] : await host.checks(pr.number);
     check(canMerge(ticket, role, { headSha: pr.headSha, open: pr.state === 'open' && !pr.merged, checks }));
     const method = this.opts.mergeMethod ?? 'merge';
+    // canMerge has checked that the head is the reviewed commit, so the status is true of it.
+    if (this.opts.reviewStatus === 'gate') {
+      await host.setStatus(pr.headSha, REVIEW_STATUS, 'success', `Reviewed as ticket #${id}`);
+    }
     try {
       await host.merge(pr.number, pr.headSha, method);
     } catch (e) {

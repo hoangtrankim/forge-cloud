@@ -206,6 +206,12 @@ describe('config components', () => {
     expect(loadConfig(dir).mergeMethod).toBe('squash');
     writeFileSync(join(dir, 'factory.config.yml'), 'mergeMethod: fast-forward\n');
     expect(() => loadConfig(dir)).toThrow(/mergeMethod must be one of/);
+    writeFileSync(join(dir, 'factory.config.yml'), '');
+    expect(loadConfig(dir).reviewStatus).toBe('reviewer');
+    writeFileSync(join(dir, 'factory.config.yml'), 'reviewStatus: gate\n');
+    expect(loadConfig(dir).reviewStatus).toBe('gate');
+    writeFileSync(join(dir, 'factory.config.yml'), 'reviewStatus: nobody\n');
+    expect(() => loadConfig(dir)).toThrow(/reviewStatus must be one of/);
   });
 
   it('rejects a malformed map', () => {

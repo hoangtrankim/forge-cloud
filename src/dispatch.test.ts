@@ -7,7 +7,7 @@ import { Dispatcher, Lock } from './dispatch.js';
 import { Factory } from './factory.js';
 import { specStatus, type Ticket } from './lifecycle.js';
 import { JsonlLog } from './logs.js';
-import { route, waitingOnOwner, type Snapshot } from './router.js';
+import { route, routeAll, waitingOnOwner, type Snapshot } from './router.js';
 import { parseResult, type AgentRunner, type RunRequest } from './runner.js';
 import { MemoryTracker } from './tracker/memory.js';
 
@@ -93,6 +93,18 @@ describe('route', () => {
     const tickets = [spec(), ticket({ state: 'done', closed: true })];
     expect(route(snap(tickets))).toMatchObject({ agent: 'planner', rule: 'close-spec' });
     expect(route(snap([spec(), ticket()]), new Set(['designer:10']))).toBeUndefined();
+  });
+
+  it('lists every due step, one per ticket, in the order route picks them', () => {
+    const t = ticket({ id: 3, state: 'in-qa', pr: 5, reviewedSha: 'abc' });
+    const prs = new Map([[3, { headSha: 'abc', merged: false, checksDone: true, checksGreen: true }]]);
+    const reported = new Map([[3, new Set(['abc'])]]);
+    const tickets = [spec(), ticket({ id: 2, state: 'planned' }), t, ticket({ id: 4, state: 'in-review', pr: 6 })];
+    const all = routeAll(snap(tickets, { prs, reported }));
+    expect(all.map((x) => [x.kind === 'agent' ? x.agent : x.kind, x.ticket])).toEqual([['merge', 3], ['reviewer', 4], ['designer', 2]]);
+    expect(route(snap(tickets, { prs, reported }))).toEqual(all[0]);
+    // A ticket the dispatcher gave up on can still take a later rule, as with route.
+    expect(routeAll(snap(tickets, { prs, reported }), new Set(['reviewer:4'])).map((x) => x.ticket)).toEqual([3, 2]);
   });
 
   it('leaves blocked and needs-human tickets to the owner', () => {
@@ -293,6 +305,92 @@ describe('Dispatcher', () => {
     expect(runner.calls).toHaveLength(0);
     expect(await d.run({ maxRuns: 2 })).toMatchObject({ stoppedBy: 'max-runs' });
     expect(runner.calls).toHaveLength(2);
+  });
+});
+
+describe('Dispatcher.gate and steps (session dispatcher with a merge gate)', () => {
+  // The session runs the agents; here the test plays them, then the gate does the rule steps.
+  async function inQa(reviewStatus: 'reviewer' | 'gate') {
+    const tracker = new MemoryTracker();
+    const host = new FakeHost();
+    const factory = new Factory(tracker, { codeHost: host, reviewStatus });
+    await factory.create({ title: 'Spec', type: 'spec', body: '- AC-1: x' }, 'grill');
+    await factory.create({ title: 'Add', spec: 1, covers: ['AC-1'] }, 'planner');
+    await factory.move(2, { to: 'designed', role: 'designer' });
+    await factory.markTestsReady(2, 'qa-writer');
+    await factory.move(2, { to: 'building', role: 'builder' });
+    await factory.move(2, { to: 'in-review', role: 'builder', pr: 5 });
+    await factory.move(2, { to: 'in-qa', role: 'reviewer', sha: SHA });
+    const runner = new ScriptedRunner(async () => {
+      throw new Error('the gate never runs an agent');
+    });
+    const lines: string[] = [];
+    const d = new Dispatcher({ tracker, factory, codeHost: host, runner, cwd: '.', out: (s) => lines.push(s) });
+    return { tracker, host, factory, runner, d, lines };
+  }
+
+  it('lists only agent steps for the session, never a merge', async () => {
+    const { d, factory } = await inQa('gate');
+    expect(await d.steps()).toMatchObject([{ agent: 'qa-reporter', ticket: 2 }]);
+    await factory.note(2, 'qa-reporter', `PASS at ${SHA}`);
+    // Now only a merge is due, which is the gate's; the spec's close waits for it.
+    expect(await d.steps()).toEqual([]);
+  });
+
+  it('waits for the QA report, then posts the review status and merges at the reviewed commit', async () => {
+    const { d, host, factory, tracker, runner } = await inQa('gate');
+    // The reviewer's pass posted no status: a cloud session cannot.
+    expect(host.statuses).toEqual([]);
+    expect(await d.gate()).toMatchObject({ steps: [], merged: [] });
+    await factory.note(2, 'qa-reporter', `PASS at ${SHA}`);
+    expect((await d.gate({ dryRun: true })).steps).toEqual([{ kind: 'merge', ticket: 2, rule: 'merge-green' }]);
+    expect(host.merges).toEqual([]);
+    const r = await d.gate();
+    expect(r).toMatchObject({ merged: [2], needsHuman: [] });
+    expect(host.statuses).toEqual([[SHA, 'factory/review', 'success']]);
+    expect(host.merges).toEqual([[5, SHA, 'merge']]);
+    expect((await tracker.get(2)).state).toBe('done');
+    expect(runner.calls).toEqual([]);
+  });
+
+  it('keeps the reviewer posting the status when the gate is not in charge of it', async () => {
+    const { host, d, factory } = await inQa('reviewer');
+    expect(host.statuses).toEqual([[SHA, 'factory/review', 'success']]);
+    await factory.note(2, 'qa-reporter', `PASS at ${SHA}`);
+    await d.gate();
+    expect(host.statuses).toHaveLength(1);
+    expect(host.merges).toEqual([[5, SHA, 'merge']]);
+  });
+
+  it('posts no status and merges nothing for a PR that changed after its review', async () => {
+    const { d, host, tracker, factory } = await inQa('gate');
+    await factory.note(2, 'qa-reporter', `PASS at ${SHA}`);
+    host.prs.set(5, { number: 5, url: 'u', head: 'ticket-2', headSha: 'e'.repeat(40), state: 'open', merged: false });
+    const r = await d.gate();
+    expect(r.steps).toEqual([{ kind: 're-review', ticket: 2, rule: 'pushed-after-review' }]);
+    expect(host.statuses).toEqual([]);
+    expect(host.merges).toEqual([]);
+    expect((await tracker.get(2)).state).toBe('in-review');
+  });
+
+  it('brings main into a PR behind it and hands it back to the session for review', async () => {
+    const { d, host, tracker, factory } = await inQa('gate');
+    await factory.note(2, 'qa-reporter', `PASS at ${SHA}`);
+    host.prs.set(5, { number: 5, url: 'u', head: 'ticket-2', headSha: SHA, state: 'open', merged: false, behind: true });
+    await d.gate();
+    expect(host.updates).toEqual([[5, SHA]]);
+    expect(host.merges).toEqual([]);
+    expect((await tracker.get(2)).state).toBe('in-review');
+    expect(await d.steps()).toMatchObject([{ agent: 'reviewer', ticket: 2 }]);
+  });
+
+  it('hands a PR GitHub refuses to merge to a human', async () => {
+    const { d, host, tracker, factory } = await inQa('gate');
+    await factory.note(2, 'qa-reporter', `PASS at ${SHA}`);
+    host.refuse = 'HTTP 405: Required status check "test" is expected';
+    const r = await d.gate();
+    expect(r.merged).toEqual([]);
+    expect((await tracker.get(2)).state).toBe('needs-human');
   });
 });
 
