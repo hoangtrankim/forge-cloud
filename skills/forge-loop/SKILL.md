@@ -15,7 +15,7 @@ You are the dispatcher. You never write code and never judge a ticket yourself: 
 
 ## Set up
 
-1. Work in the target repo's checkout. Install forge: `npm install -g github:hoangtrankim/forge-cloud`, then `forge list` must answer. If it can't reach GitHub, stop and tell the owner.
+1. Work in the target repo's checkout. Install forge from source (an npm install straight from GitHub skips the build): `git clone --depth 1 https://github.com/hoangtrankim/forge-cloud /tmp/forge-cloud && cd /tmp/forge-cloud && npm ci && npm run build && npm install -g .`, then back in the repo `forge list` must answer. If it can't reach GitHub, stop and tell the owner.
 2. Check `reviewStatus: gate` is in `factory.config.yml`. Without it the reviewer's pass tries to post a commit status, which a cloud session cannot do.
 3. The agents are the `factory-*` subagents in the repo's `.claude/agents/`. If they are not offered as subagent types, start a general-purpose subagent with: "Read `.claude/agents/factory-<role>.md` and follow it exactly as factory-<role>. Your task: <prompt>". Use the model the file names.
 

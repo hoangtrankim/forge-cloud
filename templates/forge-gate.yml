@@ -45,7 +45,13 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: npm install -g github:hoangtrankim/forge-cloud
+      # Build forge from source: npm's git-dependency install skips the TypeScript build.
+      - uses: actions/checkout@v4
+        with:
+          repository: hoangtrankim/forge-cloud
+          path: .forge-cloud
+      - run: npm ci && npm run build && npm install -g .
+        working-directory: .forge-cloud
       - run: forge merge-gate
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
