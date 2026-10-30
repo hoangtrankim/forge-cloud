@@ -1,0 +1,9 @@
+{
+  "name": "forge-panel",
+  "version": "0.1.0",
+  "description": "A Forge pane beside the chat: factory tickets per state and the factory agents running now",
+  "types": "./types/index.d.ts",
+  "author": {
+    "name": "hoangtrankim"
+  }
+}
