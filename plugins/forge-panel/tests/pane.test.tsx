@@ -93,3 +93,23 @@ test('a finished agent moves to Finished', async ($, on) => {
   expect((await ui.find({ type: 'Text', text: /No factory agent running/ }))?.text).toBeTruthy()
   await ui.unmount()
 })
+
+test('where no pane is placed, /forge answers with the view as text', async ($, on) => {
+  const clock = mock.clock(on, { now: 0 })
+  on('command.register', () => ({ value: { command: 'forge' } }))
+  on('ui.open', () => ({ value: { isPlaced: false, reason: 'the attached surface places no panes' } }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('session.cwd', () => ({ value: '/work/todo-app' }))
+  on('process.run', () => ({ value: { exitCode: 0, stdout: JSON.stringify([{ state: 'done' }, { state: 'spec' }]), stderr: '' } }))
+  on('agent.spawn', () => ({ model: 'claude-sonnet-5-5', agentId: 'b1' }))
+  on('agent.list', () => ({ value: [{ id: 'b1', description: 'x', type: 'factory-builder', status: 'running' }] }))
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.agent.spawn({ prompt: 'Ticket 48 (spec 46).', description: 'build 48', subagentType: 'factory-builder' } as never)
+  await clock.advance(60_000)
+
+  const out = await $.command.run({ command: 'forge' })
+  const text = 'text' in out ? out.text : ''
+  expect(text).toMatch(/^Tickets: spec 1 · building 0 · in-qa 0\n/)
+  expect(text).toMatch(/Running \(1\): builder #48 · sonnet · 1m/)
+  expect(text).toMatch(/No pane here: the attached surface places no panes/)
+})

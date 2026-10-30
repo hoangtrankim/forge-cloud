@@ -47,6 +47,18 @@ async function refreshRuns($: EngineInterface): Promise<boolean> {
   return ended
 }
 
+const label = (r: Run) => `${r.role}${r.ticket ? ` #${r.ticket}` : ''}${r.model ? ` · ${r.model}` : ''}`
+const shownStates = (b: Board) => STATES.filter(st => (b.counts[st] ?? 0) > 0 || st === 'building' || st === 'in-qa')
+
+function summary(b: Board, list: readonly Run[], at: number): string {
+  const running = list.filter(r => r.endedAt === undefined)
+  const done = list.filter(r => r.endedAt !== undefined).slice(-6).reverse()
+  const lines = ['Tickets: ' + (b.error ?? shownStates(b).map(st => `${st} ${b.counts[st] ?? 0}`).join(' · '))]
+  lines.push(`Running (${running.length}): ` + (running.map(r => `${label(r)} · ${minutes(at - r.startedAt)}`).join(', ') || 'none'))
+  if (done.length > 0) lines.push('Finished: ' + done.map(r => `${r.status === 'completed' ? '✓' : '✗'} ${label(r)}`).join(', '))
+  return lines.join('\n')
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const started = await next(e)
@@ -63,9 +75,12 @@ export const register: Register = on => {
   })
 
   on('command.run', { command: 'forge' }, async $ => {
-    await $.ui.open({ id: PANE, title: TITLE })
+    const opened = await $.ui.open({ id: PANE, title: TITLE })
     await refreshBoard($)
-    return { text: 'Forge pane opened.' }
+    if (opened.isPlaced) return { text: 'Forge pane opened.' }
+    // Some surfaces place no panes: answer with the same view as text.
+    const at = await $.clock.now()
+    return { text: `${summary(await read($, board), await read($, runs), at)}\n\n(No pane here: ${opened.reason})` }
   })
 
   on('agent.spawn', async ($, e, next) => {
@@ -96,8 +111,7 @@ export const register: Register = on => {
     const at = (await read($, now)) || (await $.clock.now())
     const running = list.filter(r => r.endedAt === undefined)
     const done = list.filter(r => r.endedAt !== undefined).slice(-6).reverse()
-    const shown = STATES.filter(s => (b.counts[s] ?? 0) > 0 || s === 'building' || s === 'in-qa')
-    const label = (r: Run) => `${r.role}${r.ticket ? ` #${r.ticket}` : ''}${r.model ? ` · ${r.model}` : ''}`
+    const shown = shownStates(b)
 
     return (
       <Box flexDirection="column">
