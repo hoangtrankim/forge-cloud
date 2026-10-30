@@ -246,18 +246,29 @@ export function checkCommand(command: string, role: Role, cwd: string): Verdict 
   return allow;
 }
 
+// The guarded role a hook event's subagent runs as: `factory-reviewer` -> reviewer.
+// Claude Code puts `agent_type` on the events of a subagent's own tool calls.
+export function roleOfAgentType(agentType: unknown): Role | undefined {
+  const m = typeof agentType === 'string' ? /^factory-([a-z-]+)$/.exec(agentType) : null;
+  const role = m?.[1] as Role | undefined;
+  return role && GUARDED_ROLES.includes(role) ? role : undefined;
+}
+
 // Reads a Claude Code PreToolUse event from stdin. Exit 2 blocks the call and shows Claude
-// the reason. Anything unreadable is blocked too, so the guard fails closed.
-export function runGuard(input: string, role: string | undefined): { code: number; message?: string } {
-  if (!role) return { code: 0 };
+// the reason. The role is the one given (--role, FACTORY_ROLE) or, from the project's
+// settings hook, the subagent's type. With a role, anything unreadable is blocked too, so
+// the guard fails closed; with none, the call is not a guarded agent's and passes.
+export function runGuard(input: string, given: string | undefined): { code: number; message?: string } {
+  let event: { tool_name?: string; tool_input?: { command?: unknown }; cwd?: string; agent_type?: unknown };
   try {
-    const event = JSON.parse(input) as { tool_name?: string; tool_input?: { command?: unknown }; cwd?: string };
-    if (event.tool_name !== 'Bash') return { code: 0 };
-    const command = event.tool_input?.command;
-    if (typeof command !== 'string') return { code: 2, message: 'guard: no command to check' };
-    const v = checkCommand(command, role as Role, event.cwd ?? process.cwd());
-    return v.ok ? { code: 0 } : { code: 2, message: `Blocked by the factory guard (${role} is read-only): ${v.reason}.` };
+    event = JSON.parse(input);
   } catch (e) {
-    return { code: 2, message: `guard: could not read the hook input (${(e as Error).message})` };
+    return given ? { code: 2, message: `guard: could not read the hook input (${(e as Error).message})` } : { code: 0 };
   }
+  const role = given ?? roleOfAgentType(event.agent_type);
+  if (!role || event.tool_name !== 'Bash') return { code: 0 };
+  const command = event.tool_input?.command;
+  if (typeof command !== 'string') return { code: 2, message: 'guard: no command to check' };
+  const v = checkCommand(command, role as Role, event.cwd ?? process.cwd());
+  return v.ok ? { code: 0 } : { code: 2, message: `Blocked by the factory guard (${role} is read-only): ${v.reason}.` };
 }
