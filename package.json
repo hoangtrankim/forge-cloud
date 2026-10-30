@@ -1,0 +1,36 @@
+{
+  "name": "forge-cloud",
+  "version": "0.1.0",
+  "description": "The system factory, dispatched from a Claude session with a GitHub merge gate.",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "forge": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "prepare": "npm run build",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hoangtrankim/forge-cloud.git"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "yaml": "^2.9.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "typescript": "^5.9.3",
+    "vitest": "^2.1.9"
+  },
+  "files": [
+    "dist",
+    "agents",
+    "skills"
+  ]
+}
