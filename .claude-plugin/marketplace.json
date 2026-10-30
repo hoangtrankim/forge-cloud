@@ -1,0 +1,13 @@
+{
+  "name": "forge-cloud",
+  "description": "Claude Code mods for running the system factory from a Claude session",
+  "owner": {
+    "name": "hoangtrankim"
+  },
+  "plugins": [
+    {
+      "name": "forge-panel",
+      "source": "./plugins/forge-panel"
+    }
+  ]
+}

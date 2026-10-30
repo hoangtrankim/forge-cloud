@@ -20,6 +20,16 @@ The reviewer and security agents carry their own `forge guard --role <role>` hoo
 3. Run `forge init` in the repo and commit what it writes. Branch protection can keep requiring `test` and `factory/review`.
 4. To run the factory, ask a Claude session in the repo to "run the factory".
 
+### Watch it: the Forge pane
+
+`plugins/forge-panel` is a Claude Code mod that shows a **Forge** pane beside the chat: open tickets per state, the factory agents running now (role, ticket, model, minutes) and the last few that finished. Install it once, then open a Claude Code session in the target repo (Claude Code in a terminal, the desktop app or claude.ai/code) and say "run the factory". Each agent shows as a subagent in the chat, and the pane keeps the overview.
+
+```
+/plugin install forge-panel --marketplace hoangtrankim/forge-cloud
+```
+
+Details: [plugins/forge-panel/README.md](plugins/forge-panel/README.md).
+
 ## The original system-factory README
 
 An autonomous spec-to-PR workflow built on Claude Code. You agree a spec with the Grill. After that, agents split it into tickets, then design, test, build, review and QA each ticket, with one PR per ticket. Nobody reviews the PRs by hand: rules in code, a security gate for risky work, blind acceptance tests and CI decide.
