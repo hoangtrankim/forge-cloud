@@ -15,9 +15,11 @@ const now = atom({ plugin: 'forge-panel', key: 'now' } as const, 0)
 async function refreshBoard($: EngineInterface): Promise<void> {
   let next: Board
   try {
-    const out = await $.process.run(['forge', 'list', '--json'], { timeoutMs: 60_000 })
+    // The session's folder, not the host's: a desktop app's process starts elsewhere.
+    const cwd = await $.session.cwd()
+    const out = await $.process.run(['forge', 'list', '--json'], { cwd, timeoutMs: 60_000 })
     if (out.exitCode !== 0) {
-      next = { counts: {}, checkedAt: await $.clock.now(), error: out.stderr.trim().split('\n')[0] || 'forge list failed' }
+      next = { counts: {}, checkedAt: await $.clock.now(), error: /cannot tell which repo|not a git repository/.test(out.stderr) ? 'Not a factory repo: open the session in one' : out.stderr.trim().split('\n').pop() || 'forge list failed' }
     } else {
       next = { counts: countStates(JSON.parse(out.stdout)), checkedAt: await $.clock.now() }
     }

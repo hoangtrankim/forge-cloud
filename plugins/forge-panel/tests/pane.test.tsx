@@ -30,9 +30,12 @@ test('the pane shows ticket counts and the running agent, on every surface', asy
   on('command.register', () => ({ value: { command: 'forge' } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
-  on('process.run', () => ({
-    value: { exitCode: 0, stdout: JSON.stringify([{ state: 'building' }, { state: 'in-qa' }]), stderr: '' },
-  }))
+  const ranIn: unknown[] = []
+  on('session.cwd', () => ({ value: '/work/todo-app' }))
+  on('process.run', (_, e) => {
+    ranIn.push((e as { init?: { cwd?: string } }).init?.cwd ?? (e as { cwd?: string }).cwd)
+    return { value: { exitCode: 0, stdout: JSON.stringify([{ state: 'building' }, { state: 'in-qa' }]), stderr: '' } }
+  })
   on('agent.spawn', () => ({ model: 'claude-sonnet-5-5', agentId: 'a1' }))
   on('agent.list', () => ({ value: [{ id: 'a1', description: 'x', type: 'factory-builder', status: 'running' }] }))
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
@@ -45,6 +48,23 @@ test('the pane shows ticket counts and the running agent, on every surface', asy
     expect((await ui.find({ type: 'Text', text: /builder #29/ }))?.text).toMatch(/sonnet · 2m/)
     await ui.unmount()
   }
+  expect(ranIn[0]).toBe('/work/todo-app')
+})
+
+test('outside a factory repo the pane says so', async ($, on) => {
+  const clock = mock.clock(on, { now: 0 })
+  on('command.register', () => ({ value: { command: 'forge' } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('session.cwd', () => ({ value: '/work' }))
+  on('process.run', () => ({
+    value: { exitCode: 1, stdout: '', stderr: 'fatal: not a git repository\ncannot tell which repo to use; pass --repo owner/name or set FACTORY_REPO' },
+  }))
+  await $.session.start({ cwd: '/work', surface: 'desktop', isInteractive: true })
+  await clock.settle()
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect((await ui.find({ type: 'Text', text: /factory repo/ }))?.text).toBe('Not a factory repo: open the session in one')
+  await ui.unmount()
 })
 
 test('a finished agent moves to Finished', async ($, on) => {
@@ -53,6 +73,7 @@ test('a finished agent moves to Finished', async ($, on) => {
   on('command.register', () => ({ value: { command: 'forge' } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('session.cwd', () => ({ value: '/work/todo-app' }))
   on('process.run', () => ({ value: { exitCode: 0, stdout: '[]', stderr: '' } }))
   on('agent.spawn', () => ({ model: 'opus', agentId: 'r1' }))
   on('agent.list', () => ({ value: [{ id: 'r1', description: 'x', type: 'general-purpose', status }] }))
