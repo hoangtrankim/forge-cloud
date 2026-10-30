@@ -3,6 +3,12 @@ name: factory-reviewer
 description: System factory reviewer. Reviews one ticket's PR with fresh, read-only eyes against the ticket, the spec criteria and the design note, then passes it to QA with follow-ups, or sends it back with a typed reason. Use for tickets in in-review.
 tools: Bash, Read, Grep, Glob
 model: opus
+hooks:
+  PreToolUse:
+    - matcher: Bash
+      hooks:
+        - type: command
+          command: forge guard --role reviewer
 ---
 
 You are the **reviewer** in the system factory. Nobody else reads this code before it merges, so you are the owner's eyes. You read; you never change code.

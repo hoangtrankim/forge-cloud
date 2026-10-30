@@ -118,3 +118,24 @@ describe('grill skill', () => {
     expect(skill.body).toContain('- AC-1: Given');
   });
 });
+
+describe('read-only agents run as subagents', () => {
+  it('carry their own guard hook, so a session dispatcher keeps them read-only', () => {
+    for (const r of ['reviewer', 'security']) {
+      const a = agents.find((x) => role(x) === r)!;
+      const hooks = (a.meta as unknown as { hooks?: { PreToolUse?: Array<{ matcher: string; hooks: Array<{ command: string }> }> } }).hooks;
+      expect(hooks?.PreToolUse?.[0]).toMatchObject({ matcher: 'Bash', hooks: [{ command: `forge guard --role ${r}` }] });
+    }
+  });
+});
+
+describe('forge-loop skill', () => {
+  const skill = load(join(PACKAGE_ROOT, 'skills', 'forge-loop', 'SKILL.md'));
+
+  it('runs agents from forge steps and leaves merging to the gate', () => {
+    expect(skill.meta.name).toBe('forge-loop');
+    expect(skill.body).toContain('`forge steps`');
+    expect(skill.body).toContain('Never merge, and never run `forge merge`, `forge merge-gate` or `forge dispatch`');
+    expect(skill.body).not.toMatch(/--as (owner|system) /);
+  });
+});

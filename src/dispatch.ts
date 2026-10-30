@@ -9,7 +9,7 @@ import type { CodeHost } from './codehost.js';
 import type { Factory } from './factory.js';
 import { PASSED_CONCLUSIONS, specStatus, type Ticket } from './lifecycle.js';
 import type { JsonlLog } from './logs.js';
-import { route, waitingOnOwner, type PrFacts, type Snapshot, type Step } from './router.js';
+import { route, routeAll, waitingOnOwner, type PrFacts, type Snapshot, type Step } from './router.js';
 import type { AgentRunner, RunResult } from './runner.js';
 import type { Tracker } from './tracker/tracker.js';
 
@@ -36,6 +36,14 @@ export interface DispatchReport {
   stuck: string[];
   needsHuman: number[];
   stoppedBy: 'idle' | 'max-runs' | 'dry-run' | 'auth';
+}
+
+export interface GateReport {
+  // The rule steps that were due, in the order they ran.
+  steps: Step[];
+  merged: number[];
+  markedDone: number[];
+  needsHuman: number[];
 }
 
 export interface DispatcherDeps {
@@ -106,55 +114,8 @@ export class Dispatcher {
         await (this.d.sleep ?? sleep)(opts.intervalMs ?? 5 * 60 * 1000);
         continue;
       }
-      if (step.kind === 'mark-done') {
-        const t = byId.get(step.ticket)!;
-        await this.d.factory.move(step.ticket, { to: 'done', role: 'system', note: `PR #${t.pr} is merged.` });
-        report.markedDone.push(step.ticket);
-        this.out(`#${step.ticket} done (PR #${t.pr} merged)`);
-        continue;
-      }
-      if (step.kind === 'merge') {
-        const t = byId.get(step.ticket)!;
-        try {
-          await this.d.factory.merge(step.ticket, 'system');
-          report.merged.push(step.ticket);
-          this.out(`#${step.ticket} merged (PR #${t.pr}) and done`);
-        } catch (e) {
-          // Behind main, a conflict, or a check the host still wants: a human decides.
-          const why = e instanceof Error ? e.message : String(e);
-          await this.d.factory.move(step.ticket, { to: 'needs-human', role: 'system', reason: `could not merge: ${why}` });
-          this.out(`#${step.ticket} could not merge: ${why}`);
-        }
-        continue;
-      }
-      if (step.kind === 're-review') {
-        const t = byId.get(step.ticket)!;
-        const head = snap.prs.get(step.ticket)?.headSha;
-        await this.d.factory.move(step.ticket, {
-          to: 'in-review',
-          role: 'system',
-          note: `PR #${t.pr} moved from the reviewed commit ${t.reviewedSha ?? '(none)'} to ${head}, so it needs a new review.`,
-        });
-        this.out(`#${step.ticket} back to review (PR #${t.pr} changed after its review)`);
-        continue;
-      }
-      if (step.kind === 'update-branch') {
-        const t = byId.get(step.ticket)!;
-        const head = snap.prs.get(step.ticket)!.headSha;
-        try {
-          await this.d.codeHost.updateBranch(t.pr!, head);
-          await this.d.factory.move(step.ticket, {
-            to: 'in-review',
-            role: 'system',
-            note: `PR #${t.pr} was behind main, so the factory merged main into it. The new head needs a new review.`,
-          });
-          this.out(`#${step.ticket} updated with main (PR #${t.pr}), back to review`);
-        } catch (e) {
-          // Usually a conflict with main: a human decides.
-          const why = e instanceof Error ? e.message : String(e);
-          await this.d.factory.move(step.ticket, { to: 'needs-human', role: 'system', reason: `could not bring main into PR #${t.pr}: ${why}` });
-          this.out(`#${step.ticket} could not be updated with main: ${why}`);
-        }
+      if (step.kind !== 'agent') {
+        await this.runSystemStep(step, snap, report);
         continue;
       }
       if (!opts.watch && report.runs.length >= maxRuns) {
@@ -177,6 +138,81 @@ export class Dispatcher {
         report.stuck.push(key);
         this.out(`  stuck: factory-${step.agent} changed nothing on #${step.ticket}; skipping it until the ticket changes`);
       }
+    }
+  }
+
+  // Agent steps that could run now, one per ticket, in routing order.
+  async steps(): Promise<Array<Step & { kind: 'agent' }>> {
+    return routeAll(await this.snapshot()).filter((s): s is Step & { kind: 'agent' } => s.kind === 'agent');
+  }
+
+  // The merge gate: runs every rule step that is due (merge, mark done, back to review, bring
+  // main in), one per ticket, and never an agent. A session dispatcher runs the agents.
+  async gate(opts: { dryRun?: boolean; maxSteps?: number } = {}): Promise<GateReport> {
+    const report: GateReport = { steps: [], merged: [], markedDone: [], needsHuman: [] };
+    // Each step changes its ticket, so the loop ends; the cap guards against a host that
+    // reports the same facts after a step (a merge GitHub has not finished, say).
+    for (let i = 0; i < (opts.maxSteps ?? 20); i++) {
+      // A fresh look each time: merging one PR can leave another behind main.
+      const snap = await this.snapshot();
+      report.needsHuman = waitingOnOwner(snap).needsHuman;
+      const due = routeAll(snap).filter((s): s is Exclude<Step, { kind: 'agent' }> => s.kind !== 'agent');
+      if (opts.dryRun) {
+        report.steps = due;
+        return report;
+      }
+      const step = due[0];
+      if (!step) return report;
+      report.steps.push(step);
+      await this.runSystemStep(step, snap, report);
+    }
+    return report;
+  }
+
+  private async runSystemStep(step: Exclude<Step, { kind: 'agent' }>, snap: Snapshot, report: Pick<DispatchReport, 'merged' | 'markedDone'>): Promise<void> {
+    const t = snap.tickets.find((x) => x.id === step.ticket)!;
+    if (step.kind === 'mark-done') {
+      await this.d.factory.move(step.ticket, { to: 'done', role: 'system', note: `PR #${t.pr} is merged.` });
+      report.markedDone.push(step.ticket);
+      this.out(`#${step.ticket} done (PR #${t.pr} merged)`);
+      return;
+    }
+    if (step.kind === 'merge') {
+      try {
+        await this.d.factory.merge(step.ticket, 'system');
+        report.merged.push(step.ticket);
+        this.out(`#${step.ticket} merged (PR #${t.pr}) and done`);
+      } catch (e) {
+        // Behind main, a conflict, or a check the host still wants: a human decides.
+        const why = e instanceof Error ? e.message : String(e);
+        await this.d.factory.move(step.ticket, { to: 'needs-human', role: 'system', reason: `could not merge: ${why}` });
+        this.out(`#${step.ticket} could not merge: ${why}`);
+      }
+      return;
+    }
+    const head = snap.prs.get(step.ticket)?.headSha;
+    if (step.kind === 're-review') {
+      await this.d.factory.move(step.ticket, {
+        to: 'in-review',
+        role: 'system',
+        note: `PR #${t.pr} moved from the reviewed commit ${t.reviewedSha ?? '(none)'} to ${head}, so it needs a new review.`,
+      });
+      this.out(`#${step.ticket} back to review (PR #${t.pr} changed after its review)`);
+      return;
+    }
+    try {
+      await this.d.codeHost.updateBranch(t.pr!, head!);
+      await this.d.factory.move(step.ticket, {
+        to: 'in-review',
+        role: 'system',
+        note: `PR #${t.pr} was behind main, so the factory merged main into it. The new head needs a new review.`,
+      });
+      this.out(`#${step.ticket} updated with main (PR #${t.pr}), back to review`);
+    } catch (e) {
+      // Usually a conflict with main: a human decides.
+      const why = e instanceof Error ? e.message : String(e);
+      await this.d.factory.move(step.ticket, { to: 'needs-human', role: 'system', reason: `could not bring main into PR #${t.pr}: ${why}` });
+      this.out(`#${step.ticket} could not be updated with main: ${why}`);
     }
   }
 

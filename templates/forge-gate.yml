@@ -1,0 +1,51 @@
+# The forge merge gate. It runs rules only, never an agent: once the reviewer has passed the
+# PR's head commit, every check is green and the QA reporter has posted its evidence for that
+# commit, it posts the factory/review status and merges the PR pinned to that commit. It also
+# marks merged tickets done, sends changed PRs back to review, and brings main into PRs behind it.
+#
+# It acts as the forge-bot GitHub App, so the branches it updates still start CI. Set two repo
+# secrets from that App: FORGE_BOT_APP_ID and FORGE_BOT_PRIVATE_KEY. Agents run elsewhere, in a
+# Claude session (see the forge-loop skill).
+name: forge gate
+
+on:
+  issues:
+    types: [labeled]
+  issue_comment:
+    types: [created]
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+
+# One gate at a time per repo; a run that starts while another is going waits for it.
+concurrency:
+  group: forge-gate
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    # Skip events that cannot make a merge due: other labels, and comments on plain issues.
+    if: >-
+      github.event_name != 'issues' || startsWith(github.event.label.name, 'factory:')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/create-github-app-token@v1
+        id: app
+        with:
+          app-id: ${{ secrets.FORGE_BOT_APP_ID }}
+          private-key: ${{ secrets.FORGE_BOT_PRIVATE_KEY }}
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install -g github:hoangtrankim/forge-cloud
+      - run: forge merge-gate
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}

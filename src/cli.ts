@@ -46,8 +46,13 @@ Commands
   spec-status <id>
   report [--date YYYY-MM-DD | --days N]   The reviewer report from the logs (default: today)
   close-spec <id> --as R
-  guard                                   PreToolUse hook: checks a read-only agent's Bash command
-                                          (stdin: the hook event, FACTORY_ROLE: the agent's role)
+  guard [--role R]                        PreToolUse hook: checks a read-only agent's Bash command
+                                          (stdin: the hook event; the role from --role or FACTORY_ROLE)
+  steps [--limit N]                       The next agent steps, one per ticket (default 1), for a
+                                          dispatcher session that runs the agents itself
+  merge-gate [--dry-run]                  Rule steps only, no agents: merge green reviewed PRs, mark
+                                          merged ones done, send changed PRs back to review, bring
+                                          main into PRs behind it (run by the GitHub merge gate)
   dispatch [--dry-run] [--max-runs N] [--watch [--interval SECONDS]]
                                           Run the agents ticket by ticket, merging green reviewed
                                           PRs, until a ticket needs a human or nothing can move
@@ -170,6 +175,7 @@ export async function run(argv: string[], deps: Deps = {}): Promise<number> {
     codeHost,
     baseBranch: config.base,
     mergeMethod: config.mergeMethod,
+    reviewStatus: config.reviewStatus,
     onEvent: (e) => log?.write('events', e),
   });
   const body = () => {
@@ -177,6 +183,18 @@ export async function run(argv: string[], deps: Deps = {}): Promise<number> {
     return file ? readFileSync(resolve(deps.cwd ?? process.cwd(), file), 'utf8') : flag(a, 'body');
   };
   const json = flag(a, 'json') === 'true';
+  const dispatcherFor = () => {
+    if (!codeHost) throw new UsageError(`${cmd} needs a code host`);
+    return new Dispatcher({
+      tracker,
+      factory,
+      codeHost,
+      runner: deps.runner ?? new ClaudeRunner('claude', config.claudeArgs ?? DEFAULT_CLAUDE_ARGS),
+      cwd: deps.cwd ?? process.cwd(),
+      log,
+      out,
+    });
+  };
   const print = (v: Ticket | Ticket[] | object) => {
     if (json) return out(JSON.stringify(v, null, 2));
     if (Array.isArray(v)) return out(v.length ? v.map(summary).join('\n') : '(none)');
@@ -384,18 +402,29 @@ export async function run(argv: string[], deps: Deps = {}): Promise<number> {
       print(await factory.closeSpec(id(rest[0]), role(a)));
       return 0;
 
+    case 'steps': {
+      const limit = flag(a, 'limit');
+      const steps = (await dispatcherFor().steps()).slice(0, limit ? id(limit, '--limit') : 1);
+      if (json) out(JSON.stringify(steps, null, 2));
+      else out(steps.length ? steps.map((n) => `factory-${n.agent} #${n.ticket} (${n.rule}): ${n.prompt}`).join('\n') : 'No agent can move a ticket now.');
+      return 0;
+    }
+
+    case 'merge-gate': {
+      const r = await dispatcherFor().gate({ dryRun: flag(a, 'dry-run') === 'true' });
+      if (json) out(JSON.stringify(r, null, 2));
+      else {
+        if (flag(a, 'dry-run') === 'true') out(r.steps.length ? r.steps.map((n) => `Due: ${n.kind} #${n.ticket} (${n.rule})`).join('\n') : 'Nothing is due.');
+        else if (!r.steps.length) out('Nothing is due.');
+        if (r.merged.length) out(`Merged: ${r.merged.map((n) => `#${n}`).join(', ')}`);
+        if (r.markedDone.length) out(`Done: ${r.markedDone.map((n) => `#${n}`).join(', ')}`);
+        if (r.needsHuman.length) out(`Waiting on a human: ${r.needsHuman.map((n) => `#${n}`).join(', ')}`);
+      }
+      return 0;
+    }
+
     case 'dispatch': {
-      if (!codeHost) throw new UsageError('dispatch needs a code host');
-      const cwd = deps.cwd ?? process.cwd();
-      const dispatcher = new Dispatcher({
-        tracker,
-        factory,
-        codeHost,
-        runner: deps.runner ?? new ClaudeRunner('claude', config.claudeArgs ?? DEFAULT_CLAUDE_ARGS),
-        cwd,
-        log,
-        out,
-      });
+      const dispatcher = dispatcherFor();
       const dryRun = flag(a, 'dry-run') === 'true';
       const maxRuns = flag(a, 'max-runs');
       const interval = flag(a, 'interval');
@@ -437,7 +466,9 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   if (argv[0] === 'guard') {
     let input = '';
     for await (const chunk of process.stdin) input += chunk;
-    const r = runGuard(input, process.env.FACTORY_ROLE);
+    // The role comes from --role (an agent file's own hook) or FACTORY_ROLE (the runner).
+    const i = argv.indexOf('--role');
+    const r = runGuard(input, i > 0 ? argv[i + 1] : process.env.FACTORY_ROLE);
     if (r.message) console.error(r.message);
     process.exitCode = r.code;
     return;

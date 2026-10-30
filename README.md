@@ -2,6 +2,24 @@
 
 A copy of [system-factory](https://github.com/hoangtrankim/system-factory) at commit 7533f22, the starting point for running the factory from a Claude session with a GitHub merge gate. Design: https://claude.ai/artifact/3gwwibvZYS5D5bXYvMxdqX
 
+## How forge-cloud runs
+
+Two parts, so that no Claude session ever merges its own work:
+
+- **A Claude session dispatches.** In the target repo, the `forge-loop` skill (installed by `forge init` into `.claude/skills/`) runs `forge steps` to find the next agent step, starts that `factory-*` agent as a subagent with the printed prompt, checks with `forge show N` that the ticket moved, and repeats. It never merges.
+- **A GitHub gate merges.** `forge init` also installs `.github/workflows/forge-gate.yml`. On label changes, ticket comments, finished CI runs and once an hour, it runs `forge merge-gate` as the forge-bot GitHub App. That command runs the rule steps only, never an agent: it merges a PR whose head is the reviewed commit once every check is green and the QA note names that commit, posting the `factory/review` status first. It also marks merged tickets done, sends changed PRs back to review, and brings `main` into PRs behind it.
+
+Set `reviewStatus: gate` in `factory.config.yml` (what `forge init` writes): the reviewer's pass then only records the reviewed commit, and the gate posts the required `factory/review` status just before it merges. A cloud session cannot write commit statuses.
+
+The reviewer and security agents carry their own `forge guard --role <role>` hook in their frontmatter, so they stay read-only as subagents too.
+
+### Set up a repo
+
+1. Create a GitHub App (forge-bot) with repository permissions Contents: read and write, Pull requests: read and write, Issues: read and write, Commit statuses: read and write, Checks: read, Metadata: read. Install it on the target repo.
+2. Add two repo secrets: `FORGE_BOT_APP_ID` and `FORGE_BOT_PRIVATE_KEY`.
+3. Run `forge init` in the repo and commit what it writes. Branch protection can keep requiring `test` and `factory/review`.
+4. To run the factory, ask a Claude session in the repo to "run the factory".
+
 ## The original system-factory README
 
 An autonomous spec-to-PR workflow built on Claude Code. You agree a spec with the Grill. After that, agents split it into tickets, then design, test, build, review and QA each ticket, with one PR per ticket. Nobody reviews the PRs by hand: rules in code, a security gate for risky work, blind acceptance tests and CI decide.
