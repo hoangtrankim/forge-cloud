@@ -77,10 +77,9 @@ export const register: Register = on => {
   on('command.run', { command: 'forge' }, async $ => {
     const opened = await $.ui.open({ id: PANE, title: TITLE })
     await refreshBoard($)
-    if (opened.isPlaced) return { text: 'Forge pane opened.' }
-    // Some surfaces place no panes: answer with the same view as text.
-    const at = await $.clock.now()
-    return { text: `${summary(await read($, board), await read($, runs), at)}\n\n(No pane here: ${opened.reason})` }
+    // Answer with the view as text too: some surfaces place no panes, or place them out of sight.
+    const text = summary(await read($, board), await read($, runs), await $.clock.now())
+    return { text: opened.isPlaced ? text : `${text}\n\n(No pane here: ${opened.reason})` }
   })
 
   on('agent.spawn', async ($, e, next) => {

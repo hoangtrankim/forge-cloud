@@ -113,3 +113,17 @@ test('where no pane is placed, /forge answers with the view as text', async ($, 
   expect(text).toMatch(/Running \(1\): builder #48 · sonnet · 1m/)
   expect(text).toMatch(/No pane here: the attached surface places no panes/)
 })
+
+test('where the pane is placed, /forge still answers with the view as text', async ($, on) => {
+  mock.clock(on, { now: 0 })
+  on('command.register', () => ({ value: { command: 'forge' } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('session.cwd', () => ({ value: '/work/todo-app' }))
+  on('process.run', () => ({ value: { exitCode: 0, stdout: JSON.stringify([{ state: 'in-review' }]), stderr: '' } }))
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+
+  const out = await $.command.run({ command: 'forge' })
+  const text = 'text' in out ? out.text : ''
+  expect(text).toMatch(/^Tickets: building 0 · in-review 1 · in-qa 0\nRunning \(0\): none$/)
+})
