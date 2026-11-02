@@ -34,7 +34,7 @@ Details: [plugins/forge-panel/README.md](plugins/forge-panel/README.md).
 
 An autonomous spec-to-PR workflow built on Claude Code. You agree a spec with the Grill. After that, agents split it into tickets, then design, test, build, review and QA each ticket, with one PR per ticket. Nobody reviews the PRs by hand: rules in code, a security gate for risky work, blind acceptance tests and CI decide.
 
-The idea comes from [Kiln](https://github.com/thuongdinh/kiln-software-factory): **judgement lives in prompts, rules live in code, state lives in the tracker.** Agents never edit labels themselves. They call the `forge` CLI, which refuses any move the rules don't allow.
+The core idea: **judgement lives in prompts, rules live in code, state lives in the tracker.** Agents never edit labels themselves. They call the `forge` CLI, which refuses any move the rules don't allow.
 
 The command is called `forge`. The agents (`factory-*`), the labels (`factory:*`), `factory.config.yml` and the log folder keep the `factory` name.
 

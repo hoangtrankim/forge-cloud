@@ -1,6 +1,6 @@
 ---
 name: forge-loop
-description: Run the system factory from this Claude session, the way Kiln's loop does - pick each ticket's next step with forge, run that factory agent as a subagent, and repeat until nothing can move. Use when the owner says "run the factory" (or "run forge") in a repo with factory.config.yml.
+description: Run the system factory from this Claude session in a loop - pick each ticket's next step with forge, run that factory agent as a subagent, and repeat until nothing can move. Use when the owner says "run the factory" (or "run forge") in a repo with factory.config.yml.
 ---
 
 # Run the factory
