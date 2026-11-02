@@ -2,9 +2,14 @@
 
 A Claude Code mod that puts a **Forge** pane beside the chat while a session runs the factory (the `forge-loop` skill):
 
-- **Tickets**: open factory tickets per state, from `forge list --json` in the session's folder (refreshed every minute and whenever a factory agent finishes).
-- **Running**: each factory agent running now, with its role, ticket, model and minutes. It counts `factory-<role>` subagents and general-purpose subagents told to follow `.claude/agents/factory-<role>.md`.
-- **Finished**: the last few factory agents that finished, with a tick or a cross.
+- **Needs you**: tickets waiting on you (`needs-human`, `blocked`), in a red box; a green tick when nothing is.
+- **Pipeline**: every state in order, `spec › planned › designed › building › review › qa › done`, each in its own colour with its count.
+- **Tickets by state**: each open ticket by title, as a link to its issue, with its round when it was sent back, `⚠ risky`, and its priority in the planner's words (`core`, `main flow`, `secondary`, `polish`; specs show none).
+- **Running now**: each factory agent running, with its role, ticket, model, minutes and step (`step 4 of 6`).
+- **Recently finished / done**: the last agents that finished (✓ or ✗) and the last three done tickets.
+- A one-line hint on what to do next when no agent runs.
+
+Tickets come from `forge list --all --json` in the session's folder (refreshed every minute and whenever a factory agent finishes). It counts `factory-<role>` subagents and general-purpose subagents told to follow `.claude/agents/factory-<role>.md`. Colours are theme colours, so they follow light and dark mode.
 
 `/forge` opens the pane again if you closed it.
 

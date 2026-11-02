@@ -10,9 +10,22 @@ export type Run = {
   status: string
 }
 
-// Open factory tickets per state, from `forge list --json`.
+// One ticket as the pane draws it, from `forge list --all --json`.
+export type TicketRow = {
+  id: number
+  title: string
+  state: string
+  priority: number
+  round: number
+  risky: boolean
+  closed: boolean
+  pr?: number
+}
+
+// Open tickets plus the last few done, and the repo they live in (for links).
 export type Board = {
-  counts: Record<string, number>
+  tickets: TicketRow[]
+  repo?: string
   checkedAt: number
   error?: string
 }
