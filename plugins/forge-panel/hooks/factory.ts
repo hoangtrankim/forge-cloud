@@ -27,6 +27,9 @@ export const STATE_COLOR: Record<string, Color> = {
   blocked: 'error',
 }
 
+// What the planner's priorities mean (agents/factory-planner.md), in words.
+export const PRIORITY: Record<number, string> = { 0: 'core', 1: 'main flow', 2: 'secondary', 3: 'polish' }
+
 // The agent flow for one ticket, for "step N of 6".
 export const FLOW = ['planner', 'designer', 'qa-writer', 'builder', 'reviewer', 'qa-reporter'] as const
 

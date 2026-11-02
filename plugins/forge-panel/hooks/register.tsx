@@ -6,6 +6,7 @@ import {
   ENDED,
   NEEDS_YOU,
   PIPELINE,
+  PRIORITY,
   SHORT,
   STATE_COLOR,
   ago,
@@ -189,7 +190,11 @@ export const register: Register = on => {
           {url ? <Link href={url}>{name}</Link> : <Text>{name}</Text>}
           {t.round > 0 && <Text color="warning">round {t.round}</Text>}
           {t.risky && <Text color="warning">⚠ risky</Text>}
-          <Text dimColor>p{t.priority}</Text>
+          {t.state !== 'spec' && PRIORITY[t.priority] && (
+            <Text dimColor={t.priority > 1} color={t.priority <= 1 ? 'suggestion' : undefined}>
+              {PRIORITY[t.priority]}
+            </Text>
+          )}
         </Box>
       )
     }

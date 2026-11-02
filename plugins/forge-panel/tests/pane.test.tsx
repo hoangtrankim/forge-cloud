@@ -88,6 +88,8 @@ test('the pane lists tickets by state with links, and the running agent with its
     expect(await ui.find({ type: 'Text', text: /builder #29 · sonnet/ })).toBeTruthy()
     expect(await ui.find({ type: 'Text', text: /step 4 of 6/ })).toBeTruthy()
     expect(await ui.find({ type: 'Text', text: /RECENTLY DONE/ })).toBeTruthy()
+    expect(await ui.find({ type: 'Text', text: /^secondary$/ })).toBeTruthy()
+    expect(await ui.find({ type: 'Text', text: /^p\d$/ })).toBeFalsy()
     await ui.unmount()
   }
   expect(ranIn[0]).toBe('/work/todo-app')
