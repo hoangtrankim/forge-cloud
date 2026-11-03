@@ -20,6 +20,7 @@ export type TicketRow = {
   risky: boolean
   closed: boolean
   pr?: number
+  spec?: number
 }
 
 // Open tickets plus the last few done, and the repo they live in (for links).

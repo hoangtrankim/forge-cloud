@@ -1,6 +1,6 @@
 {
   "name": "forge-panel",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "A Forge pane beside the chat: what needs you, the ticket pipeline, each ticket by state, and the factory agents running now",
   "types": "./types/index.d.ts",
   "author": {

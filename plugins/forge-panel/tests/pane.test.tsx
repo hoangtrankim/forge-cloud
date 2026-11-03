@@ -1,7 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { AgentStatus, CommandRunInput, On, ProcessRunResult } from 'claude-code'
 
-import { countStates, repoOf, roleOf, stepOf, ticketOf, toRows } from '../hooks/factory'
+import { countStates, filledCells, progress, repoOf, roleOf, stageOf, stepOf, ticketOf, toRows, workInHand } from '../hooks/factory'
 
 const PANE = {
   plugin: 'forge-panel',
@@ -66,6 +66,30 @@ test('roles, tickets, rows and repos come out right', async () => {
   expect(rows.map(r => r.id)).toEqual([9, 5, 4, 3, 2])
 })
 
+test('progress counts the work in hand by pipeline steps', async () => {
+  expect(stageOf('spec')).toBe(0)
+  expect(stageOf('building')).toBe(3)
+  expect(stageOf('done')).toBe(6)
+  expect(stageOf('needs-human')).toBe(3)
+  // Spec 40 is split into 41-43; spec 46 is not split yet; 30 is done under a closed spec.
+  const rows = toRows([
+    T(40, 'spec'),
+    T(41, 'done', { spec: 40 }),
+    T(42, 'building', { spec: 40 }),
+    T(43, 'planned', { spec: 40 }),
+    T(46, 'spec'),
+    T(30, 'done', { spec: 29 }),
+  ])
+  const work = workInHand(rows)
+  expect(work.map(t => t.id).sort()).toEqual([41, 42, 43, 46])
+  expect(work.some(t => t.id === 40)).toBe(false)
+  // (6 + 3 + 1 + 0) of 4 × 6 steps
+  expect(progress(work)).toEqual({ pct: 42, done: 1, total: 4 })
+  expect(progress([])).toEqual({ pct: 0, done: 0, total: 0 })
+  expect(filledCells(42, 24)).toBe(10)
+  expect(filledCells(150, 24)).toBe(24)
+})
+
 test('the pane lists tickets by state with links, and the running agent with its step, on every surface', async ($, on) => {
   const clock = mock.clock(on, { now: 1_000_000 })
   const ranIn: unknown[] = []
@@ -89,6 +113,8 @@ test('the pane lists tickets by state with links, and the running agent with its
     expect(await ui.find({ type: 'Text', text: /step 4 of 6/ })).toBeTruthy()
     expect(await ui.find({ type: 'Text', text: /RECENTLY DONE/ })).toBeTruthy()
     expect(await ui.find({ type: 'Text', text: /^secondary$/ })).toBeTruthy()
+    expect(await ui.find({ type: 'Text', text: /^\d+% · \d+ of \d+ done$/ })).toBeTruthy()
+    expect(await ui.find({ type: 'Text', text: /^▰▰▰$/ })).toBeTruthy()
     expect(await ui.find({ type: 'Text', text: /^p\d$/ })).toBeFalsy()
     await ui.unmount()
   }
@@ -164,7 +190,7 @@ test('where no pane is placed, /forge answers with the view as text', async ($, 
   const text = 'text' in out ? out.text : ''
   expect(text).toMatch(/^Forge · hoangtrankim\/todo-app\n/)
   expect(text).toMatch(/Needs you: nothing ✓/)
-  expect(text).toMatch(/Pipeline: spec 1 › planned 0 › designed 0 › building 0 › review 0 › qa 0 › done 1/)
+  expect(text).toMatch(/Pipeline: █*░+ 0% · 0 of 1 done\n {2}spec 1 › planned 0 › designed 0 › building 0 › review 0 › qa 0 › done 0/)
   expect(text).toMatch(/spec:\n {2}#46 Filter todos/)
   expect(text).toMatch(/Running \(1\): builder #48 · sonnet · 1m/)
   expect(text).toMatch(/No pane here: the attached surface places no panes/)
@@ -178,7 +204,7 @@ test('where the pane is placed, /forge still answers with the view as text', asy
 
   const out = await $.command.run(FORGE)
   const text = 'text' in out ? out.text : ''
-  expect(text).toMatch(/Pipeline: .*review 1/)
+  expect(text).toMatch(/Pipeline: .* 67% · 0 of 1 done\n.*review 1/)
   expect(text).toMatch(/Running \(0\): none/)
   expect(text).toMatch(/Run the forge-loop skill to carry on\.$/)
   expect(text).not.toMatch(/No pane here/)

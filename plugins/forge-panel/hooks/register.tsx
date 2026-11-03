@@ -11,6 +11,11 @@ import {
   STATE_COLOR,
   ago,
   countStates,
+  filledCells,
+  LAST_STAGE,
+  progress,
+  stageOf,
+  workInHand,
   minutes,
   repoOf,
   roleOf,
@@ -78,14 +83,17 @@ async function refreshRuns($: EngineInterface): Promise<boolean> {
 
 // What the pane and /forge both show, worked out once.
 function view(b: Board, list: readonly Run[]) {
-  const counts = countStates(b.tickets)
+  const work = workInHand(b.tickets)
+  const counts = countStates(work)
+  const prog = progress(work)
   const open = b.tickets.filter(t => !t.closed && t.state !== 'done')
   const needsYou = open.filter(t => (NEEDS_YOU as readonly string[]).includes(t.state))
-  const waiting = open.filter(t => !(NEEDS_YOU as readonly string[]).includes(t.state))
+  // A spec already split into tickets shows as its tickets, not as waiting to start.
+  const waiting = work.filter(t => t.state !== 'done' && !(NEEDS_YOU as readonly string[]).includes(t.state))
   const groups = PIPELINE.filter(s => s !== 'done')
     .map(state => ({ state, tickets: waiting.filter(t => t.state === state) }))
     .filter(g => g.tickets.length > 0)
-  const done = b.tickets.filter(t => t.state === 'done')
+  const done = b.tickets.filter(t => t.state === 'done').slice(0, 3)
   const running = list.filter(r => r.endedAt === undefined)
   const finished = list.filter(r => r.endedAt !== undefined).slice(-6).reverse()
   const inFlight = open.some(t => t.state !== 'spec' && !(NEEDS_YOU as readonly string[]).includes(t.state))
@@ -96,10 +104,14 @@ function view(b: Board, list: readonly Run[]) {
     else if (!inFlight) hint = 'Run the forge-loop skill to pick these up.'
     else hint = 'Run the forge-loop skill to carry on.'
   }
-  return { counts, needsYou, groups, done, running, finished, hint }
+  return { counts, prog, needsYou, groups, done, running, finished, hint }
 }
 
 const stateLabel = (s: string) => SHORT[s] ?? s
+const BAR = 24
+const bar = (pct: number) => '█'.repeat(filledCells(pct, BAR)) + '░'.repeat(BAR - filledCells(pct, BAR))
+const progressText = (p: { pct: number; done: number; total: number }) =>
+  p.total ? `${p.pct}% · ${p.done} of ${p.total} done` : 'nothing in hand'
 const label = (r: Run) => `${r.role}${r.ticket ? ` #${r.ticket}` : ''}${r.model ? ` · ${r.model}` : ''}`
 const issueUrl = (repo: string | undefined, id: number) => (repo ? `https://github.com/${repo}/issues/${id}` : '')
 const tags = (t: TicketRow) =>
@@ -114,7 +126,8 @@ function summary(b: Board, list: readonly Run[], at: number): string {
   const lines = [`Forge${b.repo ? ` · ${b.repo}` : ''}`, '']
   lines.push('Needs you: ' + (v.needsYou.length ? '' : 'nothing ✓'))
   lines.push(...v.needsYou.map(row))
-  lines.push('', 'Pipeline: ' + PIPELINE.map(s => `${stateLabel(s)} ${v.counts[s] ?? 0}`).join(' › '))
+  lines.push('', `Pipeline: ${bar(v.prog.pct)} ${progressText(v.prog)}`)
+  lines.push('  ' + PIPELINE.map(s => `${stateLabel(s)} ${v.counts[s] ?? 0}`).join(' › '))
   for (const g of v.groups) lines.push('', `${g.state}:`, ...g.tickets.map(row))
   lines.push('', `Running (${v.running.length}): ` + (v.running.map(r => `${label(r)} · ${minutes(at - r.startedAt)}`).join(', ') || 'none'))
   if (v.finished.length > 0) lines.push('Finished: ' + v.finished.map(r => `${r.status === 'completed' ? '✓' : '✗'} ${label(r)}`).join(', '))
@@ -186,7 +199,14 @@ export const register: Register = on => {
       const name = `#${t.id} ${t.title}`
       return (
         <Box flexDirection="row" gap={1}>
-          <Text color={STATE_COLOR[t.state] ?? 'text'}>●</Text>
+          {t.state === 'spec' ? (
+            <Text color={STATE_COLOR.spec ?? 'text'}>●</Text>
+          ) : (
+            <Text>
+              <Text color={STATE_COLOR[t.state] ?? 'text'}>{'▰'.repeat(stageOf(t.state))}</Text>
+              <Text dimColor>{'▱'.repeat(LAST_STAGE - stageOf(t.state))}</Text>
+            </Text>
+          )}
           {url ? <Link href={url}>{name}</Link> : <Text>{name}</Text>}
           {t.round > 0 && <Text color="warning">round {t.round}</Text>}
           {t.risky && <Text color="warning">⚠ risky</Text>}
@@ -238,7 +258,16 @@ export const register: Register = on => {
         </Box>
 
         <Box flexDirection="column">
-          {heading('PIPELINE')}
+          <Box flexDirection="row" justifyContent="space-between">
+            {heading('PIPELINE')}
+            <Text size="footnote" weight="semibold" color={v.prog.pct === 100 ? 'success' : 'text'}>
+              {progressText(v.prog)}
+            </Text>
+          </Box>
+          <Text>
+            <Text color="success">{'█'.repeat(filledCells(v.prog.pct, BAR))}</Text>
+            <Text dimColor>{'░'.repeat(BAR - filledCells(v.prog.pct, BAR))}</Text>
+          </Text>
           <Box flexDirection="row" flexWrap="wrap" columnGap={1}>
             {PIPELINE.map((s, i) => {
               const n = v.counts[s] ?? 0
