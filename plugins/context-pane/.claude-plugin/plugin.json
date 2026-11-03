@@ -1,0 +1,9 @@
+{
+  "name": "context-pane",
+  "version": "0.1.0",
+  "description": "A Context pane beside the chat: how full the context window is and how much of each request the prompt cache served",
+  "types": "./types/index.d.ts",
+  "author": {
+    "name": "hoangtrankim"
+  }
+}
