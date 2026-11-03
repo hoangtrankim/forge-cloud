@@ -37,6 +37,8 @@ export interface CodeHost {
   // Merges the base branch into the PR, only if its head is still `sha`. The new head is a
   // new commit, so it needs its own review and checks.
   updateBranch(number: number, sha: string): Promise<void>;
+  // Deletes a branch on the host. Its commits stay reachable from the merged PR.
+  deleteBranch(branch: string): Promise<void>;
 }
 
 export type MergeMethod = 'merge' | 'squash' | 'rebase';
@@ -111,5 +113,9 @@ export class GitHubCodeHost implements CodeHost {
 
   async updateBranch(number: number, sha: string): Promise<void> {
     await this.gh({ method: 'PUT', path: this.path(`pulls/${number}/update-branch`), body: { expected_head_sha: sha } });
+  }
+
+  async deleteBranch(branch: string): Promise<void> {
+    await this.gh({ method: 'DELETE', path: this.path(`git/refs/heads/${branch}`) });
   }
 }

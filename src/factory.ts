@@ -284,10 +284,24 @@ export class Factory {
       throw new RuleError(`GitHub refused to merge PR #${pr.number}: ${e instanceof Error ? e.message : String(e)}`);
     }
     this.emit({ kind: 'merge', ticket: id, role });
+    const dropped = await this.dropBranch(id, pr.head);
     const who = role === 'owner' ? 'the owner' : 'the factory';
     let note = `PR #${pr.number} merged by ${who} (${method}) at the reviewed commit ${pr.headSha}, with every check green.`;
+    if (dropped) note += ` Branch \`${pr.head}\` deleted.`;
     if (ticket.risky) note += `\n\nThis ticket is marked risky. It merged automatically; the owner should look at it afterwards.`;
     return this.move(id, { to: 'done', role: 'system', note });
+  }
+
+  // Deletes the merged ticket branch on the host. Only a factory branch (ticket-N for this
+  // ticket), and never fatal: the merge has happened, and a branch someone already deleted is fine.
+  async dropBranch(id: number, branch: string): Promise<boolean> {
+    if (branch !== `ticket-${id}`) return false;
+    try {
+      await this.host().deleteBranch(branch);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   async prOf(id: number): Promise<number> {

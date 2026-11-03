@@ -7,6 +7,8 @@ export type AgentRole = Exclude<Role, 'grill' | 'owner' | 'system'>;
 
 export interface PrFacts {
   headSha: string;
+  // The PR's branch name.
+  head?: string;
   merged: boolean;
   // Every check has finished (passed or failed). No checks yet counts as not finished.
   checksDone: boolean;
