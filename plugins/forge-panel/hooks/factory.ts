@@ -51,7 +51,8 @@ export function ticketOf(prompt: string): number | undefined {
 }
 
 // `forge list --all --json` rows, kept to what the pane draws: every open
-// ticket, and the last few done ones.
+// ticket, every done ticket of a spec still open (the work in hand), and the
+// last few done ones.
 export function toRows(tickets: ReadonlyArray<Record<string, unknown>>, doneKept = 3): TicketRow[] {
   const rows: TicketRow[] = []
   for (const t of tickets) {
@@ -66,11 +67,56 @@ export function toRows(tickets: ReadonlyArray<Record<string, unknown>>, doneKept
       closed: t.closed === true,
     }
     if (typeof t.pr === 'number') row.pr = t.pr
+    if (typeof t.spec === 'number') row.spec = t.spec
     rows.push(row)
   }
   const open = rows.filter(r => !r.closed && r.state !== 'done')
-  const done = rows.filter(r => r.state === 'done').sort((a, b) => b.id - a.id).slice(0, doneKept)
-  return [...open.sort((a, b) => a.priority - b.priority || a.id - b.id), ...done]
+  const openSpecs = new Set(open.filter(r => r.state === 'spec').map(r => r.id))
+  const done = rows.filter(r => r.state === 'done').sort((a, b) => b.id - a.id)
+  const kept = done.filter((r, i) => i < doneKept || (r.spec !== undefined && openSpecs.has(r.spec)))
+  return [...open.sort((a, b) => a.priority - b.priority || a.id - b.id), ...kept]
+}
+
+// How far along a ticket is: its place in the pipeline, 0 (spec) to 6 (done).
+// A ticket waiting on the owner stopped somewhere past design: count it at building.
+export function stageOf(state: string): number {
+  const i = (PIPELINE as readonly string[]).indexOf(state)
+  return i >= 0 ? i : 3
+}
+export const LAST_STAGE = PIPELINE.length - 1
+
+// The work in hand: open tickets, done tickets of open specs, and open specs
+// not split into tickets yet (a split spec is counted by its tickets).
+export function workInHand(tickets: readonly TicketRow[]): TicketRow[] {
+  const open = tickets.filter(t => !t.closed && t.state !== 'done')
+  const openSpecs = new Set(open.filter(t => t.state === 'spec').map(t => t.id))
+  const ofSpec = (t: TicketRow) => t.spec !== undefined && openSpecs.has(t.spec)
+  const split = new Set(tickets.filter(t => t.state !== 'spec' && t.spec !== undefined).map(t => t.spec))
+  return [
+    ...open.filter(t => t.state !== 'spec' || !split.has(t.id)),
+    ...tickets.filter(t => t.state === 'done' && ofSpec(t)),
+  ]
+}
+
+// Overall progress of the work in hand: the share of pipeline steps behind it.
+export function progress(work: readonly TicketRow[]): { pct: number; done: number; total: number } {
+  if (work.length === 0) return { pct: 0, done: 0, total: 0 }
+  const steps = work.reduce((n, t) => n + stageOf(t.state), 0)
+  return {
+    pct: Math.round((100 * steps) / (work.length * LAST_STAGE)),
+    done: work.filter(t => t.state === 'done').length,
+    total: work.length,
+  }
+}
+
+// A bar of `width` cells for a percentage: how many are filled.
+export function filledCells(pct: number, width: number): number {
+  return Math.max(0, Math.min(width, Math.round((pct / 100) * width)))
+}
+
+// A ticket's own step bar: one cell per step after spec.
+export function stepCells(state: string): { filled: number; total: number } {
+  return { filled: stageOf(state), total: LAST_STAGE }
 }
 
 export function countStates(tickets: ReadonlyArray<{ state?: unknown; closed?: unknown }>): Record<string, number> {
