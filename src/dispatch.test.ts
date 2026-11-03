@@ -124,7 +124,7 @@ class FakeHost implements CodeHost {
     throw new Error('unused');
   }
   async getPr(n: number) {
-    return this.prs.get(n) ?? { number: n, url: 'u', head: 'h', headSha: SHA, state: 'open' as const, merged: false };
+    return this.prs.get(n) ?? { number: n, url: 'u', head: 'ticket-2', headSha: SHA, state: 'open' as const, merged: false };
   }
   async diff() {
     return '';
@@ -149,6 +149,12 @@ class FakeHost implements CodeHost {
     if (this.conflict) throw new Error(this.conflict);
     this.updates.push([n, sha]);
     this.prs.set(n, { ...(await this.getPr(n)), headSha: 'f'.repeat(40), behind: false });
+  }
+  deleted: string[] = [];
+  refuseDelete?: string;
+  async deleteBranch(branch: string) {
+    if (this.refuseDelete) throw new Error(this.refuseDelete);
+    this.deleted.push(branch);
   }
 }
 
@@ -199,6 +205,7 @@ describe('Dispatcher', () => {
     expect(r).toMatchObject({ merged: [2], stoppedBy: 'idle' });
     expect(runner.calls[0]!.prompt).toBe('Ticket 2 (spec 1). Follow your prompt.');
     expect(host.merges).toEqual([[5, SHA, 'merge']]);
+    expect(host.deleted).toEqual(['ticket-2']);
     expect(await tracker.get(2)).toMatchObject({ state: 'done', closed: true });
     expect((await tracker.get(1)).closed).toBe(true);
 
@@ -216,7 +223,21 @@ describe('Dispatcher', () => {
     const r = await d.run();
     expect(r).toMatchObject({ merged: [], markedDone: [2] });
     expect(host.merges).toEqual([]);
+    expect(host.deleted).toEqual(['ticket-2']);
     expect((await tracker.get(2)).state).toBe('done');
+  });
+
+  it('deletes only the ticket-N branch, and a refused delete does not undo the merge', async () => {
+    const { d, host, tracker } = await setup(happyPath);
+    host.prs.set(5, { number: 5, url: 'u', head: 'my-feature', headSha: SHA, state: 'open', merged: false });
+    expect(await d.run()).toMatchObject({ merged: [2] });
+    expect(host.deleted).toEqual([]);
+    expect(tracker.posted.get(2)?.join('\n')).not.toContain('deleted');
+
+    const other = await setup(happyPath);
+    other.host.refuseDelete = 'HTTP 422: Reference does not exist';
+    expect(await other.d.run()).toMatchObject({ merged: [2] });
+    expect((await other.tracker.get(2)).state).toBe('done');
   });
 
   it('hands a PR GitHub refuses to merge to a human', async () => {
@@ -349,7 +370,9 @@ describe('Dispatcher.gate and steps (session dispatcher with a merge gate)', () 
     expect(r).toMatchObject({ merged: [2], needsHuman: [] });
     expect(host.statuses).toEqual([[SHA, 'factory/review', 'success']]);
     expect(host.merges).toEqual([[5, SHA, 'merge']]);
+    expect(host.deleted).toEqual(['ticket-2']);
     expect((await tracker.get(2)).state).toBe('done');
+    expect(tracker.posted.get(2)?.join('\n')).toContain('Branch `ticket-2` deleted.');
     expect(runner.calls).toEqual([]);
   });
 

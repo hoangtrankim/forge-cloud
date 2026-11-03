@@ -7,7 +7,7 @@ A copy of [system-factory](https://github.com/hoangtrankim/system-factory) at co
 Two parts, so that no Claude session ever merges its own work:
 
 - **A Claude session dispatches.** In the target repo, the `forge-loop` skill (installed by `forge init` into `.claude/skills/`) runs `forge steps` to find the next agent step, starts that `factory-*` agent as a subagent with the printed prompt, checks with `forge show N` that the ticket moved, and repeats. It never merges.
-- **A GitHub gate merges.** `forge init` also installs `.github/workflows/forge-gate.yml`. On label changes, ticket comments, finished CI runs and once an hour, it runs `forge merge-gate` as the forge-bot GitHub App. That command runs the rule steps only, never an agent: it merges a PR whose head is the reviewed commit once every check is green and the QA note names that commit, posting the `factory/review` status first. It also marks merged tickets done, sends changed PRs back to review, and brings `main` into PRs behind it.
+- **A GitHub gate merges.** `forge init` also installs `.github/workflows/forge-gate.yml`. On label changes, ticket comments, finished CI runs and once an hour, it runs `forge merge-gate` as the forge-bot GitHub App. That command runs the rule steps only, never an agent: it merges a PR whose head is the reviewed commit once every check is green and the QA note names that commit, posting the `factory/review` status first. It also marks merged tickets done, sends changed PRs back to review, and brings `main` into PRs behind it. After a merge it deletes the `ticket-N` branch on GitHub (never any other branch), and the forge-loop session runs `forge clean` to remove the local worktree and branch.
 
 Set `reviewStatus: gate` in `factory.config.yml` (what `forge init` writes): the reviewer's pass then only records the reviewed commit, and the gate posts the required `factory/review` status just before it merges. A cloud session cannot write commit statuses.
 
@@ -270,6 +270,7 @@ forge pr N --as builder --body-file F      # open or find the PR for branch tick
 forge diff N                               # the PR's diff
 forge checks N                             # CI on the PR head, and whether it is merged; exit 3 failed, 4 pending
 forge merge N --as owner                   # merge the reviewed, green PR now and mark the ticket done
+forge clean [--dry-run]                    # remove local worktrees and ticket-N branches of done tickets
 forge dispatch [--dry-run] [--max-runs N] [--watch [--interval S]]
 ```
 

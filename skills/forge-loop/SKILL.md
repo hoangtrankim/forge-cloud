@@ -18,6 +18,7 @@ You are the dispatcher. You never write code and never judge a ticket yourself: 
 1. Work in the target repo's checkout. If `forge steps` already answers there, forge is installed: go to step 2. Otherwise install forge from source (an npm install straight from GitHub skips the build): `git clone --depth 1 https://github.com/hoangtrankim/forge-cloud /tmp/forge-cloud && cd /tmp/forge-cloud && npm ci && npm run build && npm install -g .`, then back in the repo `forge steps` must answer. If the install is refused or can't reach GitHub, stop and tell the owner to install forge-cloud themselves (on a Mac: clone it, `npm ci && npm run build && npm link`).
 2. Check `reviewStatus: gate` is in `factory.config.yml`. Without it the reviewer's pass tries to post a commit status, which a cloud session cannot do.
 3. The agents are the `factory-*` subagents in the repo's `.claude/agents/`. Start each one as its own subagent type (`factory-reviewer`, ...): the read-only guard in `.claude/settings.json` knows the reviewer and security by that type. If the types are not offered (the session started outside the repo), a general-purpose subagent may run the other roles with: "Read `.claude/agents/factory-<role>.md` and follow it exactly as factory-<role>. Your task: <prompt>", using the model the file names. Never run the reviewer or security that way: stop and tell the owner to start the session in the repo's folder.
+4. Run `forge clean` once. It removes the local worktrees (`../worktrees/ticket-N`) and `ticket-N` branches of tickets that are already done, and nothing else. The gate deletes the branch on GitHub when it merges.
 
 ## Each tick
 
@@ -31,6 +32,8 @@ When `forge steps` says no agent can move a ticket:
 - If tickets sit in `in-qa`, they wait on CI, the QA report, or the gate. Wait about 20 minutes without spinning (schedule a wake-up), then tick again.
 - If a ticket is `needs-human` or `blocked`, tell the owner which one and why, with its link, and keep working on the rest.
 - If nothing is in flight, the run is over.
+
+Whenever a tick shows a ticket newly `done` (the gate merged it), run `forge clean` before the next agent, so its worktree and branch go.
 
 ## Keep the owner informed
 

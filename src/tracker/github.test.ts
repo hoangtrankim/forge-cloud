@@ -135,6 +135,14 @@ describe('GitHubCodeHost.merge', () => {
   });
 });
 
+describe('GitHubCodeHost.deleteBranch', () => {
+  it('deletes the branch ref over REST', async () => {
+    const { gh, calls } = fakeGh({ 'DELETE repos/o/r/git/refs/heads/ticket-7': () => undefined });
+    await new GitHubCodeHost('o/r', gh).deleteBranch('ticket-7');
+    expect(calls).toEqual([{ method: 'DELETE', path: 'repos/o/r/git/refs/heads/ticket-7' }]);
+  });
+});
+
 describe('GitHubCodeHost.updateBranch', () => {
   it('merges main into the PR over REST, pinned to the head commit, and reads behind', async () => {
     const { gh, calls } = fakeGh({

@@ -13,6 +13,7 @@ import { JsonlLog, logDir } from './logs.js';
 import { ClaudeRunner, DEFAULT_CLAUDE_ARGS, type AgentRunner } from './runner.js';
 import { init } from './init.js';
 import { runGuard } from './guard.js';
+import { clean, gitIn, type Git } from './clean.js';
 import { formatReport, loadLogs, reviewerReport } from './report.js';
 import { GitHubTracker } from './tracker/github.js';
 import type { Tracker } from './tracker/tracker.js';
@@ -53,6 +54,8 @@ Commands
   merge-gate [--dry-run]                  Rule steps only, no agents: merge green reviewed PRs, mark
                                           merged ones done, send changed PRs back to review, bring
                                           main into PRs behind it (run by the GitHub merge gate)
+  clean [--dry-run]                       Remove the local worktrees and ticket-N branches of done
+                                          tickets (run by the dispatcher session, not by agents)
   dispatch [--dry-run] [--max-runs N] [--watch [--interval SECONDS]]
                                           Run the agents ticket by ticket, merging green reviewed
                                           PRs, until a ticket needs a human or nothing can move
@@ -146,6 +149,7 @@ export interface Deps {
   out?: (s: string) => void;
   now?: () => Date;
   cwd?: string;
+  git?: Git;
 }
 
 export async function run(argv: string[], deps: Deps = {}): Promise<number> {
@@ -419,6 +423,26 @@ export async function run(argv: string[], deps: Deps = {}): Promise<number> {
         if (r.merged.length) out(`Merged: ${r.merged.map((n) => `#${n}`).join(', ')}`);
         if (r.markedDone.length) out(`Done: ${r.markedDone.map((n) => `#${n}`).join(', ')}`);
         if (r.needsHuman.length) out(`Waiting on a human: ${r.needsHuman.map((n) => `#${n}`).join(', ')}`);
+      }
+      return 0;
+    }
+
+    case 'clean': {
+      const dryRun = flag(a, 'dry-run') === 'true';
+      const isDone = async (n: number) => {
+        try {
+          return (await tracker.get(n)).state === 'done';
+        } catch {
+          return false;
+        }
+      };
+      const r = await clean(deps.git ?? gitIn(deps.cwd ?? process.cwd()), isDone, { dryRun });
+      if (json) out(JSON.stringify(r, null, 2));
+      else {
+        const verb = dryRun ? 'Would remove' : 'Removed';
+        if (!r.worktrees.length && !r.branches.length) out('Nothing to clean.');
+        for (const w of r.worktrees) out(`${verb} worktree ${w}`);
+        for (const b of r.branches) out(`${verb} branch ${b}`);
       }
       return 0;
     }

@@ -80,6 +80,7 @@ export class Dispatcher {
       const checks = pr.merged ? [] : await this.d.codeHost.checks(pr.number);
       prs.set(t.id, {
         headSha: pr.headSha,
+        head: pr.head,
         merged: pr.merged,
         checksDone: checks.length > 0 && checks.every((c) => c.status === 'completed'),
         checksGreen: checks.length > 0 && checks.every((c) => c.status === 'completed' && PASSED_CONCLUSIONS.includes(c.conclusion ?? '')),
@@ -173,6 +174,8 @@ export class Dispatcher {
     const t = snap.tickets.find((x) => x.id === step.ticket)!;
     if (step.kind === 'mark-done') {
       await this.d.factory.move(step.ticket, { to: 'done', role: 'system', note: `PR #${t.pr} is merged.` });
+      const head = snap.prs.get(step.ticket)?.head;
+      if (head) await this.d.factory.dropBranch(step.ticket, head);
       report.markedDone.push(step.ticket);
       this.out(`#${step.ticket} done (PR #${t.pr} merged)`);
       return;
