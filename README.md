@@ -30,6 +30,12 @@ The reviewer and security stay read-only as subagents: `forge init` adds a `forg
 
 Details: [plugins/forge-panel/README.md](plugins/forge-panel/README.md).
 
+`plugins/context-pane` is a second, separate mod: a **Context** pane with how full the context window is and how much of each request the prompt cache served (read, written, not cached, hit rate), for the last response and the whole session. It works in any project.
+
+```
+/plugin install context-pane --marketplace hoangtrankim/forge-cloud
+```
+
 ## The original system-factory README
 
 An autonomous spec-to-PR workflow built on Claude Code. You agree a spec with the Grill. After that, agents split it into tickets, then design, test, build, review and QA each ticket, with one PR per ticket. Nobody reviews the PRs by hand: rules in code, a security gate for risky work, blind acceptance tests and CI decide.

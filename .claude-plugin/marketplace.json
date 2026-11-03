@@ -8,6 +8,10 @@
     {
       "name": "forge-panel",
       "source": "./plugins/forge-panel"
+    },
+    {
+      "name": "context-pane",
+      "source": "./plugins/context-pane"
     }
   ]
 }
