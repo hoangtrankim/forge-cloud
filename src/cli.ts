@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // forge: the only way agents change tickets. Every command that changes something needs --as.
 
-import { readFileSync, realpathSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { basename, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { loadConfig, resolveRepo } from './config.js';
@@ -12,7 +12,7 @@ import { Dispatcher, Lock } from './dispatch.js';
 import { JsonlLog, logDir } from './logs.js';
 import { ClaudeRunner, DEFAULT_CLAUDE_ARGS, type AgentRunner } from './runner.js';
 import { init } from './init.js';
-import { runGuard } from './guard.js';
+import { GUARD_LOG, appendGuardLog, guardLogLine, guardRanSince, runGuard } from './guard.js';
 import { clean, gitIn, type Git } from './clean.js';
 import { formatReport, loadLogs, reviewerReport } from './report.js';
 import { GitHubTracker } from './tracker/github.js';
@@ -49,6 +49,9 @@ Commands
   close-spec <id> --as R
   guard [--role R]                        PreToolUse hook: checks a read-only agent's Bash command
                                           (stdin: the hook event; the role from --role or FACTORY_ROLE)
+                                          and logs each check to /tmp/factory/guard.log
+  guard --ran R --since TIME              Exit 0 if the guard checked a command of role R since TIME
+                                          (ISO), 1 if not: proof the hook fired for that run
   steps [--limit N]                       The next agent steps, one per ticket (default 1), for a
                                           dispatcher session that runs the agents itself
   merge-gate [--dry-run]                  Rule steps only, no agents: merge green reviewed PRs, mark
@@ -485,17 +488,54 @@ export async function run(argv: string[], deps: Deps = {}): Promise<number> {
   }
 }
 
+// `forge guard`: the PreToolUse hook, or with --ran, the check that it fired. Any error in
+// the hook itself blocks (exit 2), so a broken guard never lets a read-only agent through.
+export async function guardMain(argv: string[], stdin: AsyncIterable<string | Buffer> = process.stdin, log = GUARD_LOG): Promise<number> {
+  const flag = (name: string) => {
+    const i = argv.indexOf(name);
+    return i > 0 ? argv[i + 1] : undefined;
+  };
+  const ran = flag('--ran');
+  if (ran !== undefined) {
+    const since = flag('--since');
+    if (!since) {
+      console.error('guard --ran needs --since <ISO time>');
+      return 64;
+    }
+    try {
+      const text = existsSync(log) ? readFileSync(log, 'utf8') : '';
+      const n = guardRanSince(text, ran, since);
+      if (n > 0) {
+        console.log(`guard checked ${n} command(s) of ${ran} since ${since}`);
+        return 0;
+      }
+      console.error(`guard checked no command of ${ran} since ${since}: the hook did not fire, so ${ran} ran unguarded`);
+      return 1;
+    } catch (e) {
+      console.error(e instanceof Error ? e.message : String(e));
+      return 1;
+    }
+  }
+  try {
+    let input = '';
+    for await (const chunk of stdin) input += chunk;
+    // The role comes from --role (an agent file's own hook), FACTORY_ROLE (the runner) or,
+    // with neither, the subagent type on the event (the project settings hook).
+    const r = runGuard(input, flag('--role') ?? process.env.FACTORY_ROLE);
+    const line = guardLogLine(r);
+    if (line) appendGuardLog(line, log);
+    if (r.message) console.error(r.message);
+    return r.code;
+  } catch (e) {
+    console.error(`Blocked: the factory guard failed (${e instanceof Error ? e.message : String(e)}).`);
+    return 2;
+  }
+}
+
 export async function main(argv = process.argv.slice(2)): Promise<void> {
   // The hook entry point: no repo or config needed, and it must answer fast.
   if (argv[0] === 'guard') {
-    let input = '';
-    for await (const chunk of process.stdin) input += chunk;
-    // The role comes from --role (an agent file's own hook), FACTORY_ROLE (the runner) or,
-    // with neither, the subagent type on the event (the project settings hook).
-    const i = argv.indexOf('--role');
-    const r = runGuard(input, i > 0 ? argv[i + 1] : process.env.FACTORY_ROLE);
-    if (r.message) console.error(r.message);
-    process.exitCode = r.code;
+    process.exitCode = await guardMain(argv);
     return;
   }
   try {

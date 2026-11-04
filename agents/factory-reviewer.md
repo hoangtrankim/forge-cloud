@@ -8,7 +8,8 @@ hooks:
     - matcher: Bash
       hooks:
         - type: command
-          command: forge guard --role reviewer
+          command: 'command -v forge >/dev/null 2>&1 || { echo "Blocked: forge is not installed, so the factory guard cannot run." >&2; exit 2; }; exec forge guard --role reviewer'
+          onFailure: block
 ---
 
 You are the **reviewer** in the system factory. Nobody else reads this code before it merges, so you are the owner's eyes. You read; you never change code.

@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { loadConfig } from './config.js';
-import { addGuardHook, init } from './init.js';
+import { GUARD_HOOK_COMMAND, addGuardHook, init } from './init.js';
 
 const tmp = () => mkdtempSync(join(tmpdir(), 'factory-init-'));
 
@@ -39,9 +39,21 @@ describe('init', () => {
     expect(init(dir).written).toContain('.claude/settings.json');
     const settings = JSON.parse(readFileSync(file, 'utf8'));
     expect(settings.permissions).toEqual({ allow: ['Bash(npm test)'] });
-    expect(settings.hooks.PreToolUse).toEqual([{ matcher: 'Bash', hooks: [{ type: 'command', command: 'forge guard' }] }]);
+    expect(settings.hooks.PreToolUse).toEqual([{ matcher: 'Bash', hooks: [{ type: 'command', command: GUARD_HOOK_COMMAND, onFailure: 'block' }] }]);
     expect(addGuardHook(file)).toBe(false);
     expect(JSON.parse(readFileSync(file, 'utf8')).hooks.PreToolUse).toHaveLength(1);
+  });
+
+  it('upgrades an older plain forge guard hook in place', () => {
+    const dir = tmp();
+    mkdirSync(join(dir, '.claude'), { recursive: true });
+    const file = join(dir, '.claude/settings.json');
+    writeFileSync(file, JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'forge guard' }] }] } }));
+    expect(addGuardHook(file)).toBe(true);
+    expect(JSON.parse(readFileSync(file, 'utf8')).hooks.PreToolUse).toEqual([
+      { matcher: 'Bash', hooks: [{ type: 'command', command: GUARD_HOOK_COMMAND, onFailure: 'block' }] },
+    ]);
+    expect(addGuardHook(file)).toBe(false);
   });
 
   it('keeps existing files unless forced', () => {

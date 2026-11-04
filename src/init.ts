@@ -70,16 +70,31 @@ export function init(target: string, opts: { force?: boolean; repo?: string; sou
 
 export const GUARD_COMMAND = 'forge guard';
 
-// The project's settings get a PreToolUse hook on Bash that runs `forge guard`. Settings
-// hooks also fire inside subagents, so the reviewer and security stay read-only however
-// they were started. Merged into what is there; returns false when it was already there.
+// The settings hook fails closed for the guarded agents only. With forge installed it is
+// `forge guard`, which blocks on any error of its own. Without forge (a fresh cloud session,
+// a broken install) a plain `forge guard` would exit 127, which Claude Code treats as a
+// non-blocking error, so the reviewer would run unguarded. The fallback blocks the reviewer
+// and security subagents and lets everything else through, so the session can still install forge.
+export const GUARD_HOOK_COMMAND =
+  `command -v forge >/dev/null 2>&1 && exec ${GUARD_COMMAND}; ` +
+  `grep -qE '"agent_type" *: *"factory-(reviewer|security)"' && ` +
+  `{ echo "Blocked: forge is not installed, so the factory guard cannot check this read-only agent." >&2; exit 2; }; exit 0`;
+
+// The project's settings get a PreToolUse hook on Bash that runs the guard. Settings hooks
+// also fire inside subagents, so the reviewer and security stay read-only however they were
+// started. `onFailure: block` also blocks when the hook times out or cannot start (Claude
+// Code 2.1.295 or later). Merged into what is there; an older `forge guard` entry is
+// upgraded in place. Returns false when the current hook was already there.
 export function addGuardHook(file: string): boolean {
-  type Hook = { type: string; command: string };
+  type Hook = { type: string; command: string; onFailure?: string };
   type Settings = { hooks?: Record<string, Array<{ matcher?: string; hooks: Hook[] }>>; [k: string]: unknown };
   const settings: Settings = existsSync(file) ? (JSON.parse(readFileSync(file, 'utf8')) as Settings) : {};
   const pre = ((settings.hooks ??= {}).PreToolUse ??= []);
-  if (pre.some((m) => m.hooks.some((h) => h.command === GUARD_COMMAND))) return false;
-  pre.push({ matcher: 'Bash', hooks: [{ type: 'command', command: GUARD_COMMAND }] });
+  const hook: Hook = { type: 'command', command: GUARD_HOOK_COMMAND, onFailure: 'block' };
+  const old = pre.flatMap((m) => m.hooks).find((h) => h.command === GUARD_COMMAND || h.command === GUARD_HOOK_COMMAND);
+  if (old && old.command === hook.command && old.onFailure === hook.onFailure) return false;
+  if (old) Object.assign(old, hook);
+  else pre.push({ matcher: 'Bash', hooks: [hook] });
   mkdirSync(dirname(file), { recursive: true });
   writeFileSync(file, `${JSON.stringify(settings, null, 2)}\n`);
   return true;
