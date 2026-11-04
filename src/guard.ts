@@ -7,6 +7,22 @@ import type { Role } from './lifecycle.js';
 
 export const GUARDED_ROLES: readonly Role[] = ['reviewer', 'security'];
 
+// The builder may change anything except the blind acceptance tests and the test config the
+// QA writer owns. Its file edits (and the obvious Bash writes) to those paths are blocked.
+export const TEST_GUARDED_ROLES: readonly Role[] = ['builder'];
+
+// Every role the hook knows by its subagent type.
+export const HOOKED_ROLES: readonly Role[] = [...GUARDED_ROLES, ...TEST_GUARDED_ROLES];
+
+// The tools the hook watches: Bash for everyone it guards, the file tools for the builder.
+export const GUARD_MATCHER = 'Bash|Edit|Write|MultiEdit|NotebookEdit';
+const FILE_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
+
+export function isQaOwnedPath(path: string): boolean {
+  const p = path.replace(/\\/g, '/');
+  return /(^|\/)tests\/acceptance(\/|$)/.test(p) || /(^|\/)playwright\.config\.[cm]?[jt]s$/.test(p);
+}
+
 // Scratch space for notes, logs and throwaway worktrees. Writes and npm runs stay in here.
 export const SCRATCH = '/tmp/factory';
 
@@ -231,9 +247,38 @@ function checkSegment(seg: Segment, role: Role, cwd: string): Verdict {
   return deny(`${cmd} is not on the read-only list`);
 }
 
+// Commands that change the files they name. `git` subcommands that rewrite tracked files are
+// checked the same way.
+const FILE_WRITERS = new Set(['rm', 'mv', 'cp', 'tee', 'truncate', 'touch', 'chmod', 'ln', 'install']);
+const IN_PLACE = new Set(['sed', 'perl']);
+const GIT_FILE_WRITERS = new Set(['rm', 'mv', 'checkout', 'restore', 'apply']);
+
+// The builder's Bash command: blocked only when it plainly writes a QA-owned path. A line
+// the parser cannot follow ($( ), backticks) is not blocked: the builder is not read-only,
+// and the reviewer's scope check still catches any change to those files.
+function checkBuilderCommand(command: string): Verdict {
+  const segments = parse(command);
+  if (typeof segments === 'string') return allow;
+  const no = (path: string) => deny(`${path} belongs to the QA writer; send a flawed test back instead of changing it`);
+  for (const seg of segments) {
+    const target = seg.writes.find(isQaOwnedPath);
+    if (target) return no(target);
+    const words = seg.words.filter((w) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(w));
+    const [cmd, ...args] = words;
+    if (!cmd) continue;
+    const paths = args.filter(isQaOwnedPath);
+    if (!paths.length) continue;
+    if (FILE_WRITERS.has(cmd)) return no(paths[0]!);
+    if (IN_PLACE.has(cmd) && args.some((a) => /^-[a-zA-Z]*i/.test(a) || a.startsWith('--in-place'))) return no(paths[0]!);
+    if (cmd === 'git' && args[0] && GIT_FILE_WRITERS.has(args[0])) return no(paths[0]!);
+  }
+  return allow;
+}
+
 // The verdict for one Bash command run by `role` from `cwd`. `cd` inside the line moves
 // the working directory for the commands after it.
 export function checkCommand(command: string, role: Role, cwd: string): Verdict {
+  if (TEST_GUARDED_ROLES.includes(role)) return checkBuilderCommand(command);
   if (!GUARDED_ROLES.includes(role)) return allow;
   const segments = parse(command);
   if (typeof segments === 'string') return deny(segments);
@@ -252,7 +297,7 @@ export function checkCommand(command: string, role: Role, cwd: string): Verdict 
 export function roleOfAgentType(agentType: unknown): Role | undefined {
   const m = typeof agentType === 'string' ? /^factory-([a-z-]+)$/.exec(agentType) : null;
   const role = m?.[1] as Role | undefined;
-  return role && GUARDED_ROLES.includes(role) ? role : undefined;
+  return role && HOOKED_ROLES.includes(role) ? role : undefined;
 }
 
 // Reads a Claude Code PreToolUse event from stdin. Exit 2 blocks the call and shows Claude
@@ -265,21 +310,35 @@ export interface GuardResult {
   message?: string;
   role?: Role;
   command?: string;
+  tool?: string;
 }
 
 export function runGuard(input: string, given: string | undefined): GuardResult {
-  let event: { tool_name?: string; tool_input?: { command?: unknown }; cwd?: string; agent_type?: unknown };
+  let event: { tool_name?: string; tool_input?: { command?: unknown; file_path?: unknown; notebook_path?: unknown }; cwd?: string; agent_type?: unknown };
   try {
     event = JSON.parse(input);
   } catch (e) {
     return given ? { code: 2, message: `guard: could not read the hook input (${(e as Error).message})` } : { code: 0 };
   }
   const role = (given ?? roleOfAgentType(event.agent_type)) as Role | undefined;
-  if (!role || event.tool_name !== 'Bash') return { code: 0 };
+  if (!role) return { code: 0 };
+  const tool = event.tool_name ?? '';
+  if (FILE_TOOLS.has(tool)) {
+    if (!TEST_GUARDED_ROLES.includes(role)) return { code: 0 };
+    const path = event.tool_input?.file_path ?? event.tool_input?.notebook_path;
+    if (typeof path !== 'string') return { code: 2, message: `guard: no file path to check`, role };
+    const command = `${tool} ${path}`;
+    return isQaOwnedPath(path)
+      ? { code: 2, message: `Blocked by the factory guard: ${path} belongs to the QA writer; send a flawed test back instead of changing it.`, role, command, tool }
+      : { code: 0, role, command, tool };
+  }
+  if (tool !== 'Bash') return { code: 0 };
   const command = event.tool_input?.command;
   if (typeof command !== 'string') return { code: 2, message: 'guard: no command to check', role };
   const v = checkCommand(command, role, event.cwd ?? process.cwd());
-  return v.ok ? { code: 0, role, command } : { code: 2, message: `Blocked by the factory guard (${role} is read-only): ${v.reason}.`, role, command };
+  if (v.ok) return { code: 0, role, command, tool };
+  const why = GUARDED_ROLES.includes(role) ? `${role} is read-only` : `${role} may not change the acceptance tests`;
+  return { code: 2, message: `Blocked by the factory guard (${why}): ${v.reason}.`, role, command, tool };
 }
 
 // Every check of a guarded agent's command is one line here. The session loop reads it after
@@ -294,8 +353,11 @@ export interface GuardLogLine {
   reason?: string;
 }
 
+// The builder's allowed Bash commands are not logged: there are many and they prove nothing
+// the file-tool checks don't.
 export function guardLogLine(r: GuardResult, now = new Date()): GuardLogLine | undefined {
   if (!r.role) return undefined;
+  if (TEST_GUARDED_ROLES.includes(r.role) && r.tool === 'Bash' && r.code === 0) return undefined;
   return {
     time: now.toISOString(),
     role: r.role,

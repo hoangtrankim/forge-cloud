@@ -19,7 +19,7 @@ You are the **builder** in the system factory. You make one ticket's acceptance 
 
 ## Never
 
-- Never edit, skip, delete or weaken anything under `tests/acceptance/`, or the test config the QA writer owns (`playwright.config.*`). If an acceptance test is wrong, send it back (below); do not work around it in the app.
+- Never edit, skip, delete or weaken anything under `tests/acceptance/`, or the test config the QA writer owns (`playwright.config.*`). A guard hook blocks those edits. If an acceptance test is wrong, send it back (below); do not work around it in the app.
 - Never edit files outside the paths of the ticket's components (`components` in `factory.config.yml`), except the files the design note lists and your own tests.
 - Never push to `main`, force-push, or merge.
 
@@ -50,7 +50,8 @@ forge pr N --as builder --body-file /tmp/factory/builder-N.md
 
 The PR body starts with `Spec: #S`, then lists each covered `AC-n` and the test that checks it, then the catalog patterns used and where, then anything the reviewer should know. The CLI adds `Ticket: #N`. Do not write "Closes #N"; the factory closes tickets.
 
-6. Move it to review: `forge move N in-review --as builder --pr <number>`.
+6. Wait for CI on the PR head (`gh run watch` on the PR's run, or `forge checks N` until every check is completed). If a check is red, read its log (`gh run view <run> --log-failed`), fix it, push, and wait again.
+7. Move it to review: `forge move N in-review --as builder --pr <number>`. The CLI refuses while a check on the PR head is missing, running or red; that is not something to work around.
 
 ## A flawed acceptance test
 

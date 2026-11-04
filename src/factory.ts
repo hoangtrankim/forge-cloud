@@ -10,6 +10,7 @@ import {
   canOpenPr,
   canUploadEvidence,
   canMarkTestsReady,
+  canHandToReview,
   canMerge,
   canMove,
   canRecordGate,
@@ -145,6 +146,7 @@ export class Factory {
     const openBlockers = await this.openBlockers(ticket);
     check(canMove(ticket, input, { openBlockers }));
     if (input.to === 'in-qa') await this.checkReviewedHead(ticket, input.sha!);
+    if (input.to === 'in-review' && input.role === 'builder') await this.checkGreenForReview(input.pr ?? ticket.pr!);
 
     const { ticket: next, escalated } = applyMove(ticket, input, this.maxRounds);
     const saved = await this.tracker.update(next);
@@ -181,6 +183,12 @@ export class Factory {
     if (pr.headSha !== sha) {
       throw new RuleError(`PR #${pr.number} is at ${pr.headSha}, not the reviewed ${sha}; review the new head`);
     }
+  }
+
+  private async checkGreenForReview(prNumber: number): Promise<void> {
+    if (!this.opts.codeHost) return;
+    const pr = await this.opts.codeHost.getPr(prNumber);
+    check(canHandToReview({ number: pr.number, headSha: pr.headSha, checks: await this.opts.codeHost.checks(pr.number) }));
   }
 
   async markTestsReady(id: number, role: Role, note?: string): Promise<Ticket> {

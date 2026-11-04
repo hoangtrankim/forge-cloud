@@ -5,6 +5,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSyn
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CONFIG_FILE } from './config.js';
+import { GUARD_MATCHER } from './guard.js';
 
 // src/ and dist/ both sit one level below the package root.
 export const PACKAGE_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -80,7 +81,7 @@ export const GUARD_HOOK_COMMAND =
   `grep -qE '"agent_type" *: *"factory-(reviewer|security)"' && ` +
   `{ echo "Blocked: forge is not installed, so the factory guard cannot check this read-only agent." >&2; exit 2; }; exit 0`;
 
-// The project's settings get a PreToolUse hook on Bash that runs the guard. Settings hooks
+// The project's settings get a PreToolUse hook on Bash and the file tools that runs the guard. Settings hooks
 // also fire inside subagents, so the reviewer and security stay read-only however they were
 // started. `onFailure: block` also blocks when the hook times out or cannot start (Claude
 // Code 2.1.295 or later). Merged into what is there; an older `forge guard` entry is
@@ -91,10 +92,13 @@ export function addGuardHook(file: string): boolean {
   const settings: Settings = existsSync(file) ? (JSON.parse(readFileSync(file, 'utf8')) as Settings) : {};
   const pre = ((settings.hooks ??= {}).PreToolUse ??= []);
   const hook: Hook = { type: 'command', command: GUARD_HOOK_COMMAND, onFailure: 'block' };
-  const old = pre.flatMap((m) => m.hooks).find((h) => h.command === GUARD_COMMAND || h.command === GUARD_HOOK_COMMAND);
-  if (old && old.command === hook.command && old.onFailure === hook.onFailure) return false;
-  if (old) Object.assign(old, hook);
-  else pre.push({ matcher: 'Bash', hooks: [hook] });
+  const group = pre.find((m) => m.hooks.some((h) => h.command === GUARD_COMMAND || h.command === GUARD_HOOK_COMMAND));
+  const old = group?.hooks.find((h) => h.command === GUARD_COMMAND || h.command === GUARD_HOOK_COMMAND);
+  if (group && old && group.matcher === GUARD_MATCHER && old.command === hook.command && old.onFailure === hook.onFailure) return false;
+  if (group && old) {
+    group.matcher = GUARD_MATCHER;
+    Object.assign(old, hook);
+  } else pre.push({ matcher: GUARD_MATCHER, hooks: [hook] });
   mkdirSync(dirname(file), { recursive: true });
   writeFileSync(file, `${JSON.stringify(settings, null, 2)}\n`);
   return true;
