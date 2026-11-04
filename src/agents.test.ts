@@ -124,7 +124,11 @@ describe('read-only agents run as subagents', () => {
     for (const r of ['reviewer', 'security']) {
       const a = agents.find((x) => role(x) === r)!;
       const hooks = (a.meta as unknown as { hooks?: { PreToolUse?: Array<{ matcher: string; hooks: Array<{ command: string }> }> } }).hooks;
-      expect(hooks?.PreToolUse?.[0]).toMatchObject({ matcher: 'Bash', hooks: [{ command: `forge guard --role ${r}` }] });
+      expect(hooks?.PreToolUse?.[0]).toMatchObject({ matcher: 'Bash', hooks: [{ onFailure: 'block' }] });
+      // Fails closed when forge is missing, then hands over to the real guard.
+      const command = hooks?.PreToolUse?.[0]?.hooks[0]?.command ?? '';
+      expect(command).toContain('exit 2');
+      expect(command).toMatch(new RegExp(`exec forge guard --role ${r}$`));
     }
   });
 });

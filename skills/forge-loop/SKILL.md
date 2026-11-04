@@ -23,9 +23,10 @@ You are the dispatcher. You never write code and never judge a ticket yourself: 
 ## Each tick
 
 1. `forge steps` prints the next agent step: `factory-<role> #N (<rule>): <prompt>`.
-2. Run that agent as a subagent with exactly that prompt, and wait for it. One agent at a time for now: two at once share ports and test data.
-3. When it returns, `forge show N` must show the ticket moved, or a new comment from that role. An agent's own claim is not enough. If nothing changed, say so once in the checklist and skip that agent on that ticket until the ticket changes.
-4. Go back to 1.
+2. Run that agent as a subagent with exactly that prompt, and wait for it. One agent at a time for now: two at once share ports and test data. For `factory-reviewer` and `factory-security`, note the time first (`date -u +%Y-%m-%dT%H:%M:%SZ`).
+3. After a reviewer or security run, `forge guard --ran <role> --since <that time>` must exit 0. If it does not, the read-only guard never fired and the agent ran unguarded: stop the run, run no other agent, and tell the owner which ticket it was, with its link, before anything else.
+4. When it returns, `forge show N` must show the ticket moved, or a new comment from that role. An agent's own claim is not enough. If nothing changed, say so once in the checklist and skip that agent on that ticket until the ticket changes.
+5. Go back to 1.
 
 When `forge steps` says no agent can move a ticket:
 

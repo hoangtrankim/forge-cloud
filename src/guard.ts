@@ -2,6 +2,7 @@
 // command they run is checked here first, so "read-only" is enforced, not just asked for.
 // The dispatcher installs it as a Claude Code PreToolUse hook for the roles listed below.
 
+import { appendFileSync, mkdirSync } from 'node:fs';
 import type { Role } from './lifecycle.js';
 
 export const GUARDED_ROLES: readonly Role[] = ['reviewer', 'security'];
@@ -258,17 +259,77 @@ export function roleOfAgentType(agentType: unknown): Role | undefined {
 // the reason. The role is the one given (--role, FACTORY_ROLE) or, from the project's
 // settings hook, the subagent's type. With a role, anything unreadable is blocked too, so
 // the guard fails closed; with none, the call is not a guarded agent's and passes.
-export function runGuard(input: string, given: string | undefined): { code: number; message?: string } {
+// `role` and `command` are set when a guarded agent's Bash call was checked, for the log.
+export interface GuardResult {
+  code: number;
+  message?: string;
+  role?: Role;
+  command?: string;
+}
+
+export function runGuard(input: string, given: string | undefined): GuardResult {
   let event: { tool_name?: string; tool_input?: { command?: unknown }; cwd?: string; agent_type?: unknown };
   try {
     event = JSON.parse(input);
   } catch (e) {
     return given ? { code: 2, message: `guard: could not read the hook input (${(e as Error).message})` } : { code: 0 };
   }
-  const role = given ?? roleOfAgentType(event.agent_type);
+  const role = (given ?? roleOfAgentType(event.agent_type)) as Role | undefined;
   if (!role || event.tool_name !== 'Bash') return { code: 0 };
   const command = event.tool_input?.command;
-  if (typeof command !== 'string') return { code: 2, message: 'guard: no command to check' };
-  const v = checkCommand(command, role as Role, event.cwd ?? process.cwd());
-  return v.ok ? { code: 0 } : { code: 2, message: `Blocked by the factory guard (${role} is read-only): ${v.reason}.` };
+  if (typeof command !== 'string') return { code: 2, message: 'guard: no command to check', role };
+  const v = checkCommand(command, role, event.cwd ?? process.cwd());
+  return v.ok ? { code: 0, role, command } : { code: 2, message: `Blocked by the factory guard (${role} is read-only): ${v.reason}.`, role, command };
+}
+
+// Every check of a guarded agent's command is one line here. The session loop reads it after
+// a reviewer or security run: no line means the hook never fired, so the agent ran unguarded.
+export const GUARD_LOG = `${SCRATCH}/guard.log`;
+
+export interface GuardLogLine {
+  time: string;
+  role: Role;
+  verdict: 'allow' | 'block';
+  command?: string;
+  reason?: string;
+}
+
+export function guardLogLine(r: GuardResult, now = new Date()): GuardLogLine | undefined {
+  if (!r.role) return undefined;
+  return {
+    time: now.toISOString(),
+    role: r.role,
+    verdict: r.code === 0 ? 'allow' : 'block',
+    ...(r.command !== undefined ? { command: r.command.slice(0, 200) } : {}),
+    ...(r.message ? { reason: r.message } : {}),
+  };
+}
+
+export function appendGuardLog(line: GuardLogLine, file = GUARD_LOG): void {
+  try {
+    mkdirSync(SCRATCH, { recursive: true });
+    appendFileSync(file, `${JSON.stringify(line)}\n`);
+  } catch {
+    // The verdict stands without the log line. A log that cannot be written shows up as a
+    // missing line, which `forge guard --ran` reports, so this failure is not silent.
+  }
+}
+
+// Whether the guard checked a command of `role` at or after `since` (an ISO time). Lines
+// that are not JSON are skipped: the file is append-only and may end in a torn write.
+export function guardRanSince(log: string, role: string, since: string): number {
+  const from = Date.parse(since);
+  if (Number.isNaN(from)) throw new Error(`--since needs an ISO time such as 2026-11-04T03:00:00Z, got "${since}"`);
+  let count = 0;
+  for (const text of log.split('\n')) {
+    if (!text.trim()) continue;
+    let line: Partial<GuardLogLine>;
+    try {
+      line = JSON.parse(text) as Partial<GuardLogLine>;
+    } catch {
+      continue;
+    }
+    if (line.role === role && typeof line.time === 'string' && Date.parse(line.time) >= from) count++;
+  }
+  return count;
 }

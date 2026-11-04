@@ -1,5 +1,12 @@
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { Readable } from 'node:stream';
 import { describe, expect, it } from 'vitest';
-import { checkCommand, parse, roleOfAgentType, runGuard } from './guard.js';
+import { guardMain } from './cli.js';
+import { checkCommand, guardLogLine, guardRanSince, parse, roleOfAgentType, runGuard } from './guard.js';
+import { GUARD_HOOK_COMMAND } from './init.js';
 
 const repo = '/Users/hoang/todo-app';
 const ok = (cmd: string, cwd = repo) => expect(checkCommand(cmd, 'reviewer', cwd), cmd).toEqual({ ok: true });
@@ -73,7 +80,7 @@ describe('guard', () => {
 
   it('reads the hook event and fails closed', () => {
     const event = (command: string) => JSON.stringify({ tool_name: 'Bash', tool_input: { command }, cwd: repo });
-    expect(runGuard(event('git status'), 'reviewer')).toEqual({ code: 0 });
+    expect(runGuard(event('git status'), 'reviewer')).toEqual({ code: 0, role: 'reviewer', command: 'git status' });
     expect(runGuard(event('git push'), 'reviewer')).toMatchObject({ code: 2, message: expect.stringContaining('read-only') });
     expect(runGuard(event('git push'), undefined)).toEqual({ code: 0 });
     expect(runGuard('not json', 'reviewer').code).toBe(2);
@@ -97,8 +104,79 @@ describe('the project settings hook', () => {
   it('blocks a write from the reviewer and security subagents only', () => {
     expect(runGuard(sub('touch server.js', 'factory-reviewer'), undefined).code).toBe(2);
     expect(runGuard(sub('git push', 'factory-security'), undefined).code).toBe(2);
-    expect(runGuard(sub('git status', 'factory-reviewer'), undefined)).toEqual({ code: 0 });
+    expect(runGuard(sub('git status', 'factory-reviewer'), undefined)).toMatchObject({ code: 0, role: 'reviewer' });
     expect(runGuard(sub('touch server.js', 'factory-builder'), undefined)).toEqual({ code: 0 });
     expect(runGuard(sub('touch server.js'), undefined)).toEqual({ code: 0 });
+  });
+});
+
+describe('the guard log', () => {
+  const event = (command: string, agent_type?: string) => JSON.stringify({ tool_name: 'Bash', tool_input: { command }, cwd: '/repo', agent_type });
+  const at = new Date('2026-11-04T03:00:00Z');
+
+  it('has one line per checked command of a guarded agent, and none for others', () => {
+    expect(guardLogLine(runGuard(event('git status', 'factory-reviewer'), undefined), at)).toEqual({
+      time: '2026-11-04T03:00:00.000Z',
+      role: 'reviewer',
+      verdict: 'allow',
+      command: 'git status',
+    });
+    expect(guardLogLine(runGuard(event('git push', 'factory-security'), undefined), at)).toMatchObject({ role: 'security', verdict: 'block', reason: expect.stringContaining('read-only') });
+    expect(guardLogLine(runGuard(event('git push', 'factory-builder'), undefined), at)).toBeUndefined();
+    expect(guardLogLine(runGuard(event('ls'), undefined), at)).toBeUndefined();
+  });
+
+  it('answers whether the guard checked a role since a time', () => {
+    const log = [
+      JSON.stringify({ time: '2026-11-04T02:00:00Z', role: 'reviewer', verdict: 'allow' }),
+      'torn line {',
+      JSON.stringify({ time: '2026-11-04T03:05:00Z', role: 'security', verdict: 'allow' }),
+      JSON.stringify({ time: '2026-11-04T03:06:00Z', role: 'reviewer', verdict: 'block' }),
+      '',
+    ].join('\n');
+    expect(guardRanSince(log, 'reviewer', '2026-11-04T03:00:00Z')).toBe(1);
+    expect(guardRanSince(log, 'security', '2026-11-04T03:10:00Z')).toBe(0);
+    expect(guardRanSince('', 'reviewer', '2026-11-04T03:00:00Z')).toBe(0);
+    expect(() => guardRanSince(log, 'reviewer', 'yesterday')).toThrow(/ISO time/);
+  });
+
+  it('logs from the hook entry point and reads it back with --ran', async () => {
+    const log = join(mkdtempSync(join(tmpdir(), 'guard-')), 'guard.log');
+    const since = new Date(Date.now() - 1000).toISOString();
+    expect(await guardMain(['guard'], Readable.from([event('git push', 'factory-reviewer')]), log)).toBe(2);
+    expect(await guardMain(['guard'], Readable.from([event('ls', 'factory-builder')]), log)).toBe(0);
+    expect(readFileSync(log, 'utf8').trim().split('\n')).toHaveLength(1);
+    expect(await guardMain(['guard', '--ran', 'reviewer', '--since', since], Readable.from([]), log)).toBe(0);
+    expect(await guardMain(['guard', '--ran', 'security', '--since', since], Readable.from([]), log)).toBe(1);
+    expect(await guardMain(['guard', '--ran', 'reviewer'], Readable.from([]), log)).toBe(64);
+  });
+
+  it('blocks when the hook itself fails', async () => {
+    const broken = (async function* () {
+      yield '';
+      throw new Error('stdin closed');
+    })();
+    expect(await guardMain(['guard'], broken, join(tmpdir(), 'unused.log'))).toBe(2);
+  });
+});
+
+describe('the settings hook without forge installed', () => {
+  // PATH without forge: the fallback must block only the guarded subagents.
+  const run = (agent_type?: string) =>
+    spawnSync('sh', ['-c', GUARD_HOOK_COMMAND], {
+      input: JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'ls' }, agent_type }),
+      env: { PATH: '/usr/bin:/bin' },
+      encoding: 'utf8',
+    });
+
+  it('blocks the reviewer and security', () => {
+    expect(run('factory-reviewer').status).toBe(2);
+    expect(run('factory-reviewer').stderr).toContain('forge is not installed');
+    expect(run('factory-security').status).toBe(2);
+  });
+
+  it('lets the session and other agents through, so forge can be installed', () => {
+    expect(run().status).toBe(0);
+    expect(run('factory-builder').status).toBe(0);
   });
 });
