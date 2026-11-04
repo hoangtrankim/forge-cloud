@@ -291,6 +291,18 @@ export interface MergeFacts {
 
 export const PASSED_CONCLUSIONS = ['success', 'neutral', 'skipped'];
 
+// The builder hands a PR to review only once CI is green on its head, so the reviewer and QA
+// never spend a round on code that fails lint, types or the tests.
+export function canHandToReview(pr: { number: number; headSha: string; checks: Array<{ name: string; status: string; conclusion: string | null }> }): Check {
+  const wait = `wait for CI (\`forge checks <id>\`, or \`gh run watch\`), then move again`;
+  if (!pr.checks.length) return refuse(`PR #${pr.number} has no checks on ${pr.headSha.slice(0, 7)} yet; ${wait}`);
+  const waiting = pr.checks.filter((c) => c.status !== 'completed');
+  if (waiting.length) return refuse(`checks still running on PR #${pr.number}: ${waiting.map((c) => c.name).join(', ')}; ${wait}`);
+  const red = pr.checks.filter((c) => !PASSED_CONCLUSIONS.includes(c.conclusion ?? ''));
+  if (red.length) return refuse(`checks failed on PR #${pr.number}: ${red.map((c) => c.name).join(', ')}; fix them, push, and move again once CI is green`);
+  return ok;
+}
+
 // Only the commit the reviewer passed may merge, and only once every check on it is green.
 // The host's branch protection checks again; this refuses early with a reason.
 export function canMerge(ticket: Ticket, role: Role, pr: MergeFacts): Check {

@@ -39,7 +39,7 @@ describe('init', () => {
     expect(init(dir).written).toContain('.claude/settings.json');
     const settings = JSON.parse(readFileSync(file, 'utf8'));
     expect(settings.permissions).toEqual({ allow: ['Bash(npm test)'] });
-    expect(settings.hooks.PreToolUse).toEqual([{ matcher: 'Bash', hooks: [{ type: 'command', command: GUARD_HOOK_COMMAND, onFailure: 'block' }] }]);
+    expect(settings.hooks.PreToolUse).toEqual([{ matcher: 'Bash|Edit|Write|MultiEdit|NotebookEdit', hooks: [{ type: 'command', command: GUARD_HOOK_COMMAND, onFailure: 'block' }] }]);
     expect(addGuardHook(file)).toBe(false);
     expect(JSON.parse(readFileSync(file, 'utf8')).hooks.PreToolUse).toHaveLength(1);
   });
@@ -51,7 +51,7 @@ describe('init', () => {
     writeFileSync(file, JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'forge guard' }] }] } }));
     expect(addGuardHook(file)).toBe(true);
     expect(JSON.parse(readFileSync(file, 'utf8')).hooks.PreToolUse).toEqual([
-      { matcher: 'Bash', hooks: [{ type: 'command', command: GUARD_HOOK_COMMAND, onFailure: 'block' }] },
+      { matcher: 'Bash|Edit|Write|MultiEdit|NotebookEdit', hooks: [{ type: 'command', command: GUARD_HOOK_COMMAND, onFailure: 'block' }] },
     ]);
     expect(addGuardHook(file)).toBe(false);
   });

@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { describe, expect, it } from 'vitest';
 import { guardMain } from './cli.js';
-import { checkCommand, guardLogLine, guardRanSince, parse, roleOfAgentType, runGuard } from './guard.js';
+import { checkCommand, guardLogLine, guardRanSince, isQaOwnedPath, parse, roleOfAgentType, runGuard } from './guard.js';
 import { GUARD_HOOK_COMMAND } from './init.js';
 
 const repo = '/Users/hoang/todo-app';
@@ -80,7 +80,7 @@ describe('guard', () => {
 
   it('reads the hook event and fails closed', () => {
     const event = (command: string) => JSON.stringify({ tool_name: 'Bash', tool_input: { command }, cwd: repo });
-    expect(runGuard(event('git status'), 'reviewer')).toEqual({ code: 0, role: 'reviewer', command: 'git status' });
+    expect(runGuard(event('git status'), 'reviewer')).toEqual({ code: 0, role: 'reviewer', command: 'git status', tool: 'Bash' });
     expect(runGuard(event('git push'), 'reviewer')).toMatchObject({ code: 2, message: expect.stringContaining('read-only') });
     expect(runGuard(event('git push'), undefined)).toEqual({ code: 0 });
     expect(runGuard('not json', 'reviewer').code).toBe(2);
@@ -96,7 +96,8 @@ describe('the project settings hook', () => {
   it('knows the guarded roles by their subagent type', () => {
     expect(roleOfAgentType('factory-reviewer')).toBe('reviewer');
     expect(roleOfAgentType('factory-security')).toBe('security');
-    expect(roleOfAgentType('factory-builder')).toBeUndefined();
+    expect(roleOfAgentType('factory-builder')).toBe('builder');
+    expect(roleOfAgentType('factory-qa-writer')).toBeUndefined();
     expect(roleOfAgentType('general-purpose')).toBeUndefined();
     expect(roleOfAgentType(undefined)).toBeUndefined();
   });
@@ -105,7 +106,7 @@ describe('the project settings hook', () => {
     expect(runGuard(sub('touch server.js', 'factory-reviewer'), undefined).code).toBe(2);
     expect(runGuard(sub('git push', 'factory-security'), undefined).code).toBe(2);
     expect(runGuard(sub('git status', 'factory-reviewer'), undefined)).toMatchObject({ code: 0, role: 'reviewer' });
-    expect(runGuard(sub('touch server.js', 'factory-builder'), undefined)).toEqual({ code: 0 });
+    expect(runGuard(sub('touch server.js', 'factory-builder'), undefined)).toMatchObject({ code: 0 });
     expect(runGuard(sub('touch server.js'), undefined)).toEqual({ code: 0 });
   });
 });
@@ -123,6 +124,7 @@ describe('the guard log', () => {
     });
     expect(guardLogLine(runGuard(event('git push', 'factory-security'), undefined), at)).toMatchObject({ role: 'security', verdict: 'block', reason: expect.stringContaining('read-only') });
     expect(guardLogLine(runGuard(event('git push', 'factory-builder'), undefined), at)).toBeUndefined();
+    expect(guardLogLine(runGuard(event('rm tests/acceptance/ticket-3.spec.ts', 'factory-builder'), undefined), at)).toMatchObject({ role: 'builder', verdict: 'block' });
     expect(guardLogLine(runGuard(event('ls'), undefined), at)).toBeUndefined();
   });
 
@@ -178,5 +180,58 @@ describe('the settings hook without forge installed', () => {
   it('lets the session and other agents through, so forge can be installed', () => {
     expect(run().status).toBe(0);
     expect(run('factory-builder').status).toBe(0);
+  });
+});
+
+describe('the builder and the acceptance tests', () => {
+  const file = (tool: string, file_path: string, agent_type = 'factory-builder') =>
+    JSON.stringify({ tool_name: tool, tool_input: { file_path }, cwd: '/w/ticket-3', agent_type });
+  const bash = (command: string, agent_type = 'factory-builder') =>
+    JSON.stringify({ tool_name: 'Bash', tool_input: { command }, cwd: '/w/ticket-3', agent_type });
+
+  it('knows which paths the QA writer owns', () => {
+    expect(isQaOwnedPath('/w/ticket-3/tests/acceptance/ticket-3.spec.ts')).toBe(true);
+    expect(isQaOwnedPath('tests/acceptance')).toBe(true);
+    expect(isQaOwnedPath('/w/ticket-3/playwright.config.js')).toBe(true);
+    expect(isQaOwnedPath('/w/ticket-3/tests/api.spec.js')).toBe(false);
+    expect(isQaOwnedPath('/w/ticket-3/public/app.js')).toBe(false);
+  });
+
+  it('blocks the builder editing them with the file tools', () => {
+    expect(runGuard(file('Edit', '/w/ticket-3/tests/acceptance/ticket-3.spec.ts'), undefined)).toMatchObject({ code: 2, message: expect.stringContaining('QA writer') });
+    expect(runGuard(file('Write', '/w/ticket-3/playwright.config.js'), undefined).code).toBe(2);
+    expect(runGuard(file('MultiEdit', '/w/ticket-3/tests/acceptance/x.spec.ts'), undefined).code).toBe(2);
+    expect(runGuard(file('Edit', '/w/ticket-3/server.js'), undefined).code).toBe(0);
+    expect(runGuard(file('Write', '/w/ticket-3/tests/new.spec.js'), undefined).code).toBe(0);
+  });
+
+  it('leaves the QA writer and the session free to write them', () => {
+    expect(runGuard(file('Write', '/w/ticket-3/tests/acceptance/ticket-3.spec.ts', 'factory-qa-writer'), undefined).code).toBe(0);
+    expect(runGuard(JSON.stringify({ tool_name: 'Edit', tool_input: { file_path: 'tests/acceptance/a.spec.ts' } }), undefined).code).toBe(0);
+  });
+
+  it('blocks plain Bash writes to them and allows running them', () => {
+    for (const c of [
+      'rm tests/acceptance/ticket-3.spec.ts',
+      "sed -i 's/a/b/' tests/acceptance/ticket-3.spec.ts",
+      'echo x > tests/acceptance/ticket-3.spec.ts',
+      'git checkout origin/main -- tests/acceptance',
+      'cd /w/ticket-3 && mv playwright.config.js old.js',
+    ]) {
+      expect(runGuard(bash(c), undefined).code, c).toBe(2);
+    }
+    for (const c of [
+      'CI=1 npx playwright test tests/acceptance/ticket-3.spec.ts',
+      'cat tests/acceptance/ticket-3.spec.ts',
+      'git add -A && git commit -m "Fix (#3)"',
+      'git push -u origin ticket-3',
+      'npm run check',
+    ]) {
+      expect(runGuard(bash(c), undefined).code, c).toBe(0);
+    }
+  });
+
+  it('still blocks the reviewer from anything that writes', () => {
+    expect(runGuard(bash('touch server.js', 'factory-reviewer'), undefined).code).toBe(2);
   });
 });
