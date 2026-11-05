@@ -1,6 +1,6 @@
 # forge-cloud
 
-The system factory, run from a Claude session with a GitHub merge gate. It started as a copy of [system-factory](https://github.com/hoangtrankim/system-factory) at commit 7533f22 and is now the live version: use this repo's `forge`, not system-factory's, which has no `forge steps` or `forge merge-gate`. Design: https://claude.ai/artifact/3gwwibvZYS5D5bXYvMxdqX
+The system factory, run from a Claude session with a GitHub merge gate. It started as a copy of [system-factory](https://github.com/hoangtrankim/system-factory) at commit 7533f22 and is now the live version: use this repo's `forge`, not system-factory's, which has no `forge steps` or `forge merge-gate`. Architecture as it runs today: [docs/architecture.md](docs/architecture.md).
 
 ## How forge-cloud runs
 
