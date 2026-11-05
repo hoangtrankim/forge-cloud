@@ -1,6 +1,6 @@
 # forge-cloud
 
-A copy of [system-factory](https://github.com/hoangtrankim/system-factory) at commit 7533f22, the starting point for running the factory from a Claude session with a GitHub merge gate. Design: https://claude.ai/artifact/3gwwibvZYS5D5bXYvMxdqX
+The system factory, run from a Claude session with a GitHub merge gate. It started as a copy of [system-factory](https://github.com/hoangtrankim/system-factory) at commit 7533f22 and is now the live version: use this repo's `forge`, not system-factory's, which has no `forge steps` or `forge merge-gate`. Design: https://claude.ai/artifact/3gwwibvZYS5D5bXYvMxdqX
 
 ## How forge-cloud runs
 
@@ -11,18 +11,39 @@ Two parts, so that no Claude session ever merges its own work:
 
 Set `reviewStatus: gate` in `factory.config.yml` (what `forge init` writes): the reviewer's pass then only records the reviewed commit, and the gate posts the required `factory/review` status just before it merges. A cloud session cannot write commit statuses.
 
-The reviewer and security stay read-only as subagents: `forge init` adds a `forge guard` PreToolUse hook on Bash to the project's `.claude/settings.json`, which fires inside every subagent and picks the role from the subagent's type (`factory-reviewer`, `factory-security`). Their agent files also carry `forge guard --role <role>` in their frontmatter. The session loop never runs those two as general-purpose subagents, since a guard can't tell them apart from any other.
+The reviewer and security stay read-only as subagents: `forge init` adds a `forge guard` PreToolUse hook on `Bash|Edit|Write|MultiEdit|NotebookEdit` to the project's `.claude/settings.json`, which fires inside every subagent and picks the role from the subagent's type (`factory-reviewer`, `factory-security`, `factory-builder`). Their agent files also carry `forge guard --role <role>` in their frontmatter. The hook fails closed (`onFailure: "block"`, Claude Code 2.1.295 or later), and after each reviewer or security run the session checks with `forge guard --ran <role> --since <time>` that the hook really fired, stopping the run if it did not. The session loop never runs those two as general-purpose subagents, since a guard can't tell them apart from any other. See [the guard hook](#the-guard-hook).
+
+The builder hands a PR to review only once CI is green on its head (`forge move N in-review` refuses otherwise), so the reviewer and QA never spend a round on red CI.
 
 ### Set up a repo
 
 1. Create a GitHub App (forge-bot) with repository permissions Contents: read and write, Pull requests: read and write, Issues: read and write, Commit statuses: read and write, Checks: read, Metadata: read. Install it on the target repo.
 2. Add two repo secrets: `FORGE_BOT_APP_ID` and `FORGE_BOT_PRIVATE_KEY`.
-3. Run `forge init` in the repo and commit what it writes. Branch protection can keep requiring `test` and `factory/review`.
-4. To run the factory, ask a Claude session in the repo to "run the factory".
+3. Install the `forge` CLI from this repo (see [Install forge](#install-forge)).
+4. Run `forge init` in the repo and commit what it writes: the `factory-*` agents and the grill and forge-loop skills in `.claude/`, the guard hook in `.claude/settings.json`, `.github/workflows/forge-gate.yml` and `factory.config.yml`. Then `forge setup` creates the labels. Branch protection can keep requiring `test` and `factory/review`.
+5. To run the factory, ask a Claude Code session started in the repo's folder to "run the factory". Starting it in the folder matters: that is what offers the `factory-*` subagent types the guard knows.
+
+It is worth adding deny rules to the target repo's `.claude/settings.json` too, so the session itself can't merge or act as another role: `Bash(forge merge*)`, `Bash(forge dispatch*)`, `Bash(* --as owner*)`, `Bash(* --as system*)`, `Bash(gh pr merge*)` and force pushes. [todo-app](https://github.com/hoangtrankim/todo-app/blob/main/.claude/settings.json) has the full list. Owner moves then need a plain terminal.
+
+### Install forge
+
+The gate builds forge from source on each run, and the forge-loop skill installs it in a cloud session when `forge steps` doesn't answer. On your own machine, link it from a clone (an npm install straight from GitHub skips the build):
+
+```sh
+git clone https://github.com/hoangtrankim/forge-cloud && cd forge-cloud
+npm ci && npm run build && npm link
+# to update later: git pull && npm run build
+```
+
+Install it globally like this, not into the target repo's `node_modules`: the agents run `npm ci`, which wipes it mid-run.
+
+### Cleanup after merge
+
+After a merge the gate deletes the ticket's `ticket-N` branch on GitHub (only that branch, best effort). `forge clean` removes the local worktrees (`../worktrees/ticket-N`) and `ticket-N` branches of tickets that are done, and nothing else. The forge-loop session runs it at setup and after every merge; agents are blocked from running it.
 
 ### Watch it: the Forge pane
 
-`plugins/forge-panel` is a Claude Code mod that shows a **Forge** pane beside the chat: open tickets per state, the factory agents running now (role, ticket, model, minutes) and the last few that finished. Install it once, then open a Claude Code session in the target repo (Claude Code in a terminal, the desktop app or claude.ai/code) and say "run the factory". Each agent shows as a subagent in the chat, and the pane keeps the overview.
+`plugins/forge-panel` (v0.3.0) is a Claude Code mod that shows a **Forge** pane beside the chat: a red **Needs you** box for `needs-human` and `blocked` tickets, a colored pipeline with a progress bar and the count per state, each open ticket by state with a six-step bar and a link to its issue, the factory agents running now (role, ticket, model, minutes, `step N of 6`) and the last few that finished. `/forge` reopens it, and also answers with the same view as text (the desktop app may place no pane). Install it once, then open a Claude Code session in the target repo (Claude Code in a terminal, the desktop app or claude.ai/code) and say "run the factory". Each agent shows as a subagent in the chat, and the pane keeps the overview.
 
 ```
 /plugin install forge-panel --marketplace hoangtrankim/forge-cloud
@@ -30,13 +51,17 @@ The reviewer and security stay read-only as subagents: `forge init` adds a `forg
 
 Details: [plugins/forge-panel/README.md](plugins/forge-panel/README.md).
 
-`plugins/context-pane` is a second, separate mod: a **Context** pane with how full the context window is and how much of each request the prompt cache served (read, written, not cached, hit rate), for the last response and the whole session. It works in any project.
+`plugins/context-pane` is a second, separate mod: a **Context** pane with how full the context window is and how much of each request the prompt cache served (read, written, not cached, hit rate), for the last response and the whole session. It works in any project. `/context-cache` reopens it and answers with the numbers as text. Details: [plugins/context-pane/README.md](plugins/context-pane/README.md).
 
 ```
 /plugin install context-pane --marketplace hoangtrankim/forge-cloud
 ```
 
-## The original system-factory README
+To update both mods: `claude plugin marketplace update forge-cloud && claude plugin update forge-panel` (and `context-pane`), then `/reload-plugins`.
+
+## How the factory works
+
+The rest of this README comes from system-factory, updated for forge-cloud. Where it talks about the dispatcher, the forge-loop session runs the agent steps and the gate runs the merge steps; `forge dispatch` on one machine is still there as a fallback.
 
 An autonomous spec-to-PR workflow built on Claude Code. You agree a spec with the Grill. After that, agents split it into tickets, then design, test, build, review and QA each ticket, with one PR per ticket. Nobody reviews the PRs by hand: rules in code, a security gate for risky work, blind acceptance tests and CI decide.
 
@@ -54,6 +79,7 @@ Design doc: https://claude.ai/artifact/Kqw238YaXngzZFgXsEv4fn
 | 2 | Agent prompts: Grill, Planner, Designer, QA test writer, Builder, Security, Reviewer, QA reporter | done, tuned by two dry runs on [todo-app](https://github.com/hoangtrankim/todo-app) |
 | 3 | CI gate, branch protection, auto-merge, then the merge queue | CI gate, branch protection and auto-merge done; merge queue later |
 | 4 | `forge dispatch`: the loop that runs the agents, plus JSONL logs | done |
+| 4b | Cloud dispatch: forge-loop session runs the agents, forge-bot gate merges; Forge and Context panes; fail-closed guard, builder guard, green CI before review; branch and worktree cleanup | done, live on todo-app |
 | 5 | Parallel slots, then retro and lessons from the logs | later |
 
 ## The workflow
@@ -77,7 +103,7 @@ Design doc: https://claude.ai/artifact/Kqw238YaXngzZFgXsEv4fn
 6. **Security gate** (risky tickets only). A read-only security reviewer passes or fails the PR. A fail sends it back and costs a round. It also writes a risk note for the owner's weekly digest.
 7. **Review.** A read-only reviewer checks the PR against the spec, the design note, the ticket's components and the acceptance-test commits, a fixed list of quality rules, and runs the tests. Blocking findings send the ticket back with a typed reason. Minor ones become **Follow-ups**. A pass covers one commit only (see [the review gate](#the-review-gate)).
 8. **QA.** The QA reporter reads CI on the PR's head commit and posts per-test evidence on the ticket. Red CI sends the ticket back.
-9. **Merge.** The dispatcher merges the PR itself once the reviewed commit is green and the QA evidence is posted (see [auto-merge](#auto-merge)), then marks the ticket done, which unblocks the next one. Nobody needs to review the PR.
+9. **Merge.** The merge gate (or `forge dispatch` on one machine) merges the PR once the reviewed commit is green and the QA evidence is posted (see [auto-merge](#auto-merge)), then marks the ticket done, which unblocks the next one, and deletes the `ticket-N` branch. Nobody needs to review the PR.
 10. **Close.** When every ticket is done, the planner files the real follow-ups as new tickets, or closes the spec.
 
 A ticket sent back 3 times goes to `needs-human`. So does any question an agent cannot answer. Agents never guess past a gap in the spec.
@@ -86,26 +112,15 @@ A ticket sent back 3 times goes to `needs-human`. So does any question an agent 
 
 ## Run it
 
-The runner is one machine (the Mac mini) with Node 22+, `git`, the GitHub CLI and Claude Code, all signed in.
-
-```sh
-# once: the forge CLI (the repo is private, so link it from a clone)
-git clone https://github.com/hoangtrankim/system-factory && cd system-factory
-npm ci && npm run build && npm link
-
-# once per target repo
-cd ~/path/to/your-app
-forge init --repo owner/name        # agents + grill skill into .claude/, and factory.config.yml
-forge setup                         # create the labels
-```
-
-Then, for each piece of work:
+Set the repo up as in [Set up a repo](#set-up-a-repo). Then, for each piece of work:
 
 1. In Claude Code in the target repo, run `/factory-grill` and agree the spec.
-2. In a terminal in the same repo, run `forge dispatch --watch`.
-3. That's it: green, reviewed PRs merge on their own. Look at what `Waiting on a human` lists, and at the risky tickets' merge notes.
+2. In a Claude Code session in the same repo, say "run the factory". The forge-loop skill runs each agent as a subagent; the Forge pane shows where every ticket is.
+3. That's it: the gate merges green, reviewed PRs on its own. Look at what the Needs you box lists, and at the risky tickets' merge notes.
 
-Check `forge dispatch --dry-run` at any time to see what would run next. `forge list --all` shows every ticket.
+`forge steps` shows the next agent step at any time, `forge merge-gate --dry-run` what the gate would do next, and `forge list --all` every ticket.
+
+The fallback runs everything on one machine with Node 22+, `git`, the GitHub CLI and Claude Code, all signed in: `forge dispatch --watch` in a terminal in the repo. It runs each agent as `claude -p` and merges itself, so it needs `reviewStatus: reviewer` and a GitHub login that may post commit statuses.
 
 A step-by-step runbook for todo-app: https://claude.ai/artifact/CYF2fR38JET9qbkC4C5k9N
 
@@ -184,7 +199,7 @@ Each role is a Claude Code subagent in `agents/`, and the Grill is a skill in `s
 | `factory-reviewer` | `in-review` (after security on risky) | fresh review against spec, design and scope; runs the tests; blocking findings or follow-ups | read only, opus |
 | `factory-qa-reporter` | `in-qa` with CI finished | per-test evidence from CI; red CI goes back | read only |
 
-Read-only agents still have `Bash`, so they can run `forge`, `git` and tests. The prompts forbid writes. Guard hooks that block writes mechanically come later.
+Read-only agents still have `Bash`, so they can run `forge`, `git` and tests. The prompts forbid writes, and [the guard hook](#the-guard-hook) blocks them mechanically.
 
 ### Patterns catalog
 
@@ -206,10 +221,10 @@ side states: blocked, needs-human
 | --- | --- | --- |
 | planned → designed | designer | |
 | designed → building | builder | blind QA tests are marked ready, every `Blocked by` ticket is done |
-| building → in-review | builder | a PR is given |
+| building → in-review | builder | a PR is given, and every check on its head has finished green |
 | in-review → in-qa | reviewer | a `risky` ticket has passed the security gate; `--sha` is the PR's current head commit |
-| in-qa → in-review | system (the dispatcher) | the PR has commits the reviewer did not pass; no round is spent |
-| in-qa → done | system (the dispatcher) | the PR is linked; the dispatcher does this after it merges the PR, or once the owner has |
+| in-qa → in-review | system (the gate or the dispatcher) | the PR has commits the reviewer did not pass; no round is spent |
+| in-qa → done | system (the gate or the dispatcher) | the PR is linked; done after it merges the PR, or once the owner has |
 | in-review → building | reviewer, security | a send-back reason; round + 1 |
 | in-qa → building | qa-reporter, system | a send-back reason; round + 1 |
 | building / in-review → designed | builder, reviewer | reason `flawed-test` only; round + 1, tests-ready cleared, so the QA writer fixes the test |
@@ -221,7 +236,7 @@ The send-back that reaches `maxRounds` (default 3) goes to `needs-human` instead
 
 ### The review gate
 
-A review covers one commit. Passing a review (`forge move N in-qa --as reviewer --sha <sha>`) is refused unless `<sha>` is the PR's head right now. On success the CLI records `Reviewed: <sha>` on the ticket and sets a commit status, `factory/review`, to success on that commit. Commit statuses belong to one commit, so any later push starts without one. Make `factory/review` a required status check in the target repo's branch protection, and only reviewed code can merge. The dispatcher also sends an `in-qa` ticket whose PR head is not the reviewed commit back to `in-review`, so the new commits get reviewed, without costing a round.
+A review covers one commit. Passing a review (`forge move N in-qa --as reviewer --sha <sha>`) is refused unless `<sha>` is the PR's head right now. On success the CLI records `Reviewed: <sha>` on the ticket and sets a commit status, `factory/review`, to success on that commit. Commit statuses belong to one commit, so any later push starts without one. Make `factory/review` a required status check in the target repo's branch protection, and only reviewed code can merge. With `reviewStatus: gate` (what `forge init` writes; the default when unset is `reviewer`) the reviewer's pass only records `Reviewed: <sha>`, and the merge gate posts `factory/review` on that commit just before it merges, since a cloud session cannot write commit statuses. The dispatcher also sends an `in-qa` ticket whose PR head is not the reviewed commit back to `in-review`, so the new commits get reviewed, without costing a round.
 
 Only the grill or owner file specs. Only the planner or owner file tickets, edit them before building and close specs. Only the qa-writer marks tests ready, and only the builder opens a ticket's PR, from branch `ticket-N`.
 
@@ -247,7 +262,7 @@ All ticket access goes through the `Tracker` interface in `src/tracker/tracker.t
 Commands that change something need `--as <role>`. A refused change exits with code 2 and says why. `--note-file` works anywhere `--note` does.
 
 ```sh
-forge init [dir] [--force]                 # install agents, grill skill, factory.config.yml
+forge init [dir] [--force]                 # agents, grill + forge-loop skills, guard hook, forge-gate.yml, factory.config.yml
 forge setup                                # create the labels
 forge list [--state S] [--type spec|build] [--all]
 forge show N [--comments [--from role,role]]
@@ -271,6 +286,10 @@ forge diff N                               # the PR's diff
 forge checks N                             # CI on the PR head, and whether it is merged; exit 3 failed, 4 pending
 forge merge N --as owner                   # merge the reviewed, green PR now and mark the ticket done
 forge clean [--dry-run]                    # remove local worktrees and ticket-N branches of done tickets
+forge steps [--limit N]                    # the next agent steps, for the forge-loop session
+forge merge-gate [--dry-run]               # rule steps only (merge, mark done, re-review, update branch); run by the gate
+forge guard [--role R]                     # the PreToolUse hook (stdin: the hook event)
+forge guard --ran R --since TIME           # exit 0 if the guard checked a command of role R since TIME
 forge dispatch [--dry-run] [--max-runs N] [--watch [--interval S]]
 ```
 
@@ -282,6 +301,8 @@ The repo comes from `--repo`, then `FACTORY_REPO`, then `repo:` in `factory.conf
 repo: owner/name
 base: main          # branch PRs target
 maxRounds: 3        # send-backs before needs-human
+mergeMethod: merge  # merge, squash or rebase
+reviewStatus: gate  # who posts factory/review: gate (cloud session) or reviewer (forge dispatch)
 components:         # name -> paths it owns; tickets use these names, the reviewer checks PR scope
   ui: ["public/**"]
   api: ["server.js", "lib/**"]
