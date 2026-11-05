@@ -10,6 +10,7 @@ import { GATES, PASSED_CONCLUSIONS, ROLES, STATES, isRole, isState, type Gate, t
 import { GitHubCodeHost, type CodeHost } from './codehost.js';
 import { Dispatcher, Lock } from './dispatch.js';
 import { JsonlLog, logDir } from './logs.js';
+import { gitRunIn, pushLogs, readBranchLogs, writerId, type GitRun } from './logbranch.js';
 import { ClaudeRunner, DEFAULT_CLAUDE_ARGS, type AgentRunner } from './runner.js';
 import { init } from './init.js';
 import { GUARD_LOG, appendGuardLog, guardLogLine, guardRanSince, runGuard } from './guard.js';
@@ -45,7 +46,13 @@ Commands
   note <id> --as R (--note N | --note-file F)   Comment on a ticket
   evidence <id> <file> --as qa-reporter          Upload an evidence file, print its link
   spec-status <id>
-  report [--date YYYY-MM-DD | --days N]   The reviewer report from the logs (default: today)
+  report [--date YYYY-MM-DD | --days N] [--local]
+                                          The reviewer report from the logs (default: today): this
+                                          machine's plus every writer's on the factory-logs branch
+  log-run <id> --agent R --rule X --started TIME [--summary S] [--changed] [--failed]
+         [--tokens N] [--cost USD]        Record one agent run of the dispatcher session
+  logs push                               Copy this machine's logs to the factory-logs branch, in a
+                                          folder of its own (run by the session and the gate)
   close-spec <id> --as R
   guard [--role R]                        PreToolUse hook: checks a read-only agent's Bash command
                                           (stdin: the hook event; the role from --role or FACTORY_ROLE)
@@ -77,7 +84,7 @@ interface Args {
   flags: Map<string, string[]>;
 }
 
-const BOOLEAN_FLAGS = new Set(['risky', 'not-risky', 'json', 'all', 'help', 'force', 'comments', 'dry-run', 'watch']);
+const BOOLEAN_FLAGS = new Set(['risky', 'not-risky', 'json', 'all', 'help', 'force', 'comments', 'dry-run', 'watch', 'changed', 'failed', 'local']);
 
 export function parseArgs(argv: string[]): Args {
   const positional: string[] = [];
@@ -153,6 +160,8 @@ export interface Deps {
   now?: () => Date;
   cwd?: string;
   git?: Git;
+  gitRun?: GitRun;
+  env?: NodeJS.ProcessEnv;
 }
 
 export async function run(argv: string[], deps: Deps = {}): Promise<number> {
@@ -395,9 +404,55 @@ export async function run(argv: string[], deps: Deps = {}): Promise<number> {
         from = new Date(d.getFullYear(), d.getMonth(), d.getDate());
         to = new Date(from.getFullYear(), from.getMonth(), from.getDate() + 1);
       }
-      const { events, runs } = loadLogs(deps.logDir ?? logDir(repo()));
+      const branch =
+        flag(a, 'local') === 'true' ? undefined : readBranchLogs(deps.gitRun ?? gitRunIn(deps.cwd ?? process.cwd()));
+      if (branch && !branch.read && !json) out('(could not read the factory-logs branch; this machine\'s logs only)');
+      const { events, runs } = loadLogs(deps.logDir ?? logDir(repo()), branch ?? {});
       const r = reviewerReport(events, runs, from, to);
       out(json ? JSON.stringify(r, null, 2) : formatReport(r));
+      return 0;
+    }
+
+    case 'log-run': {
+      const ticket = id(rest[0]);
+      const agent = (flag(a, 'agent') ?? '').replace(/^factory-/, '');
+      if (!agent) throw new UsageError('log-run needs --agent');
+      const started = Date.parse(flag(a, 'started') ?? '');
+      if (Number.isNaN(started)) throw new UsageError('log-run needs --started TIME (ISO)');
+      const now = deps.now?.() ?? new Date();
+      const num = (name: string) => {
+        const v = flag(a, name);
+        if (v === undefined) return undefined;
+        const n = Number(v);
+        if (!Number.isFinite(n) || n < 0) throw new UsageError(`--${name} must be a number`);
+        return n;
+      };
+      const line = {
+        at: now.toISOString(),
+        ticket,
+        agent,
+        rule: flag(a, 'rule'),
+        ok: flag(a, 'failed') !== 'true',
+        durationMs: Math.max(0, now.getTime() - started),
+        costUsd: num('cost'),
+        tokens: num('tokens'),
+        changed: flag(a, 'changed') === 'true',
+        summary: flag(a, 'summary'),
+        by: 'session',
+      };
+      (log ?? new JsonlLog(logDir(repo()))).write('runs', line);
+      out(`Logged factory-${agent} #${ticket}, ${Math.round(line.durationMs / 60000)} min.`);
+      return 0;
+    }
+
+    case 'logs': {
+      if (rest[0] !== 'push') throw new UsageError('logs push');
+      const dir = deps.logDir ?? logDir(repo());
+      const r = pushLogs({ git: deps.gitRun ?? gitRunIn(deps.cwd ?? process.cwd()), localDir: dir, writer: writerId(dir, deps.env ?? process.env, deps.now?.()) });
+      if (json) out(JSON.stringify(r, null, 2));
+      else if (r.reason === 'no-logs') out('No logs on this machine yet.');
+      else if (r.reason === 'up-to-date') out(`The factory-logs branch already has ${r.writer}'s logs.`);
+      else out(`Pushed ${r.files.join(' and ')} to factory-logs as ${r.writer}.`);
       return 0;
     }
 

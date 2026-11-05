@@ -41,6 +41,8 @@ describe('guard', () => {
     blocked('forge move 12 in-qa --as builder', /you are reviewer/);
     blocked('forge setup', /not for agents/);
     blocked('forge clean', /not for agents/);
+    blocked('forge logs push', /not for agents/);
+    blocked('forge log-run 3 --agent reviewer --started 2026-11-05T00:00:00Z', /not for agents/);
     blocked('gh pr merge 5', /gh is not on/);
     blocked('rm -rf node_modules', /rm is not on/);
     blocked("sed -i 's/a/b/' server.js", /sed -i/);

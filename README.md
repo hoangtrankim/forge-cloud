@@ -172,12 +172,14 @@ The reviewer and the security reviewer keep `Bash` so they can run `forge`, git 
 
 ### Logs
 
-Logs record facts, not transcripts. They go to `~/.factory/logs/<owner>/<repo>/`, or `FACTORY_LOG_DIR` if set, and the phase 5 retro will read them:
+Logs record facts, not transcripts. Each machine that runs `forge` writes them to `~/.factory/logs/<owner>/<repo>/`, or `FACTORY_LOG_DIR` if set:
 
 - `events.jsonl` has every ticket change made through the CLI, including the agents' own: moves, gates, notes, rounds, escalations.
-- `runs.jsonl` has one line per agent run: ticket, agent, rule, exit code, duration, cost, turns, session id, whether it changed anything, and its one-line summary.
+- `runs.jsonl` has one line per agent run: ticket, agent, rule, duration, whether it changed anything, its one-line summary, and tokens or cost where known. The forge-loop session records each run with `forge log-run`; `forge dispatch` records its own runs with exit code, cost, turns and session id.
 
-`forge report` turns them into the end-of-day **reviewer report**: reviews, pass rate, send-backs by reason, re-reviews after a push, tickets done and their rounds, reviewer run time and cost, and **escapes**, meaning PRs the reviewer passed that QA or the owner sent back later. Escapes only count mistakes someone found; a planted-bug benchmark comes with the retro agent. To get it every evening on the runner machine, add a cron line such as `55 23 * * * cd ~/todo-app && forge report > ~/.factory/reports/$(date +\%F).md`.
+A cloud session and a gate runner are thrown away when they end, so `forge logs push` copies the local files to the target repo's **`factory-logs` branch**, an orphan branch that never touches `main`. Each machine writes only its own folder: `gate/<date>/<run>-<attempt>/` for a gate run, `host/<hostname>-<id>/` for any other machine (or `FACTORY_LOG_WRITER`), so two pushes never edit the same file, and a push that loses a race is rebuilt on top of the other and tried again. The gate pushes at the end of every run, and the forge-loop session after every agent and when the run ends. Agents are blocked from both commands. The branch is as public as the repo; it holds the same facts as above and no transcripts or secrets.
+
+`forge report` turns the logs from this machine plus every folder on the branch (or this machine only with `--local`) into the end-of-day **reviewer report**: reviews, pass rate, send-backs by reason, re-reviews after a push, tickets done and their rounds, reviewer run time and cost, and **escapes**, meaning PRs the reviewer passed that QA or the owner sent back later. Escapes only count mistakes someone found; a planted-bug benchmark comes with the retro agent.
 
 ## Agents
 
@@ -278,7 +280,9 @@ forge gate N security pass|fail --as security [--reason R] --note-file F
 forge note N --as R --note-file F
 forge evidence N <file> --as qa-reporter   # upload, print the link
 forge close-spec S --as planner
-forge report [--date YYYY-MM-DD | --days N]   # reviewer report from the logs (default: today)
+forge report [--date YYYY-MM-DD | --days N] [--local]   # reviewer report from the logs and the factory-logs branch (default: today)
+forge log-run N --agent R --rule X --started TIME [--summary S] [--changed] [--failed] [--tokens N]   # record one session agent run
+forge logs push                            # copy this machine's logs to the factory-logs branch
 
 forge interface N                          # the design note's Public interface only
 forge pr N --as builder --body-file F      # open or find the PR for branch ticket-N

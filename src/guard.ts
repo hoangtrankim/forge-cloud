@@ -206,7 +206,7 @@ function checkSegment(seg: Segment, role: Role, cwd: string): Verdict {
   if (cmd === 'forge') {
     const as = args.indexOf('--as');
     if (as !== -1 && args[as + 1] !== role) return deny(`forge --as ${args[as + 1]}; you are ${role}`);
-    if (['init', 'setup', 'dispatch', 'clean'].includes(args[0] ?? '')) return deny(`forge ${args[0]} is not for agents`);
+    if (['init', 'setup', 'dispatch', 'clean', 'logs', 'log-run'].includes(args[0] ?? '')) return deny(`forge ${args[0]} is not for agents`);
     return allow;
   }
   if (cmd === 'git') {

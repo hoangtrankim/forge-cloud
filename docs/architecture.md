@@ -93,7 +93,7 @@ What stops each party from doing more than its job:
 | Tickets, state, notes | GitHub issues, labels, comments |
 | Code and tests | `ticket-N` branches and PRs; worktrees at `../worktrees/ticket-N`, removed by `forge clean`; the gate deletes the remote branch after merge |
 | Test evidence | CI artifact `test-evidence`; per-test PNGs on the `factory-evidence` branch (Mac sessions only) |
-| Event and run logs | `~/.factory/logs/<owner>/<repo>/events.jsonl` and `runs.jsonl` on whatever machine ran `forge`; `forge report` summarises them |
+| Event and run logs | `~/.factory/logs/<owner>/<repo>/events.jsonl` and `runs.jsonl` on whatever machine ran `forge`, copied by `forge logs push` to one folder per writer on the repo's `factory-logs` branch (gate after every run, forge-loop after every agent); `forge report` reads them all |
 | Guard checks | `/tmp/factory/guard.log` |
 | Agent scratch notes | `/tmp/factory/<role>-<N>.md` |
 
@@ -108,7 +108,7 @@ Older docs still describe parts of this that no longer hold:
 
 ## Open gaps
 
-- **Logs don't survive a cloud session.** `~/.factory/logs` lives in an ephemeral container; the planned `factory-logs` branch and the retro agent (phase 5) aren't built.
+- **No retro agent yet.** Logs now reach the `factory-logs` branch, but nothing reads them except `forge report`; the retro agent (phase 5) isn't built, and session runs have no exact cost.
 - **QA evidence in cloud sessions:** the QA reporter gets 403 downloading the CI test-evidence artifact, so screenshots only reach the ticket from a Mac session.
 - **One agent at a time.** No parallel slots, no ticket claim (`forge steps` returns the same step to every caller), shared ports and test data.
 - **Roles are self-declared** with `--as`, and `Reviewed: <sha>` is a line in the issue body, so anyone with write access to the repo could fake a review pass. Fine for one owner, not for a team.

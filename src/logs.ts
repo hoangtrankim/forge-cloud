@@ -1,5 +1,6 @@
 // Facts for the retro, not transcripts: one JSON line per ticket change (events.jsonl) and
-// per agent run (runs.jsonl), under ~/.factory/logs/<owner>/<repo>/ on the runner machine.
+// per agent run (runs.jsonl), under ~/.factory/logs/<owner>/<repo>/ on the machine that ran forge.
+// `forge logs push` (logbranch.ts) copies them to the repo's factory-logs branch.
 
 import { appendFileSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';

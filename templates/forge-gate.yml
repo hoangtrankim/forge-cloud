@@ -41,7 +41,10 @@ jobs:
         with:
           app-id: ${{ secrets.FORGE_BOT_APP_ID }}
           private-key: ${{ secrets.FORGE_BOT_PRIVATE_KEY }}
+      # Checked out as forge-bot, so `forge logs push` below can write the factory-logs branch.
       - uses: actions/checkout@v4
+        with:
+          token: ${{ steps.app.outputs.token }}
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -55,3 +58,6 @@ jobs:
       - run: forge merge-gate
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
+      # Keep this run's log lines: a GitHub runner is thrown away when the job ends.
+      - run: forge logs push
+        if: always()
