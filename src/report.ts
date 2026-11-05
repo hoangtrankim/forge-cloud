@@ -14,6 +14,12 @@ export interface RunLine {
   ok: boolean;
   durationMs: number;
   costUsd?: number;
+  rule?: string;
+  changed?: boolean;
+  tokens?: number;
+  summary?: string;
+  // Who ran the agent: the forge-loop session (`forge log-run`) or `forge dispatch`.
+  by?: 'session' | 'dispatch';
 }
 
 export interface Escape {
@@ -40,16 +46,24 @@ export interface ReviewerReport {
 
 export function readJsonl<T>(file: string): T[] {
   if (!existsSync(file)) return [];
-  return readFileSync(file, 'utf8')
-    .split('\n')
-    .filter((l) => l.trim())
+  return parseJsonl<T>(readFileSync(file, 'utf8').split('\n'));
+}
+
+// Lines from several writers, or the same line twice (a machine's own lines are both in its local
+// file and on the logs branch): each distinct line once, in time order.
+export function parseJsonl<T>(lines: string[]): T[] {
+  const seen = new Set<string>();
+  return lines
+    .map((l) => l.trim())
+    .filter((l) => l && !seen.has(l) && seen.add(l))
     .flatMap((l) => {
       try {
         return [JSON.parse(l) as T];
       } catch {
         return [];
       }
-    });
+    })
+    .sort((a, b) => String((a as { at?: string }).at ?? '').localeCompare(String((b as { at?: string }).at ?? '')));
 }
 
 const inWindow = (at: string, from: Date, to: Date) => {
@@ -134,6 +148,11 @@ export function formatReport(r: ReviewerReport): string {
   return lines.join('\n');
 }
 
-export function loadLogs(dir: string): { events: FactoryEvent[]; runs: RunLine[] } {
-  return { events: readJsonl<FactoryEvent>(join(dir, 'events.jsonl')), runs: readJsonl<RunLine>(join(dir, 'runs.jsonl')) };
+// The local log folder, plus any lines read from the logs branch.
+export function loadLogs(dir: string, extra: { events?: string[]; runs?: string[] } = {}): { events: FactoryEvent[]; runs: RunLine[] } {
+  const local = (f: string) => (existsSync(join(dir, f)) ? readFileSync(join(dir, f), 'utf8').split('\n') : []);
+  return {
+    events: parseJsonl<FactoryEvent>([...local('events.jsonl'), ...(extra.events ?? [])]),
+    runs: parseJsonl<RunLine>([...local('runs.jsonl'), ...(extra.runs ?? [])]),
+  };
 }

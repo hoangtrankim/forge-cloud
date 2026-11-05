@@ -142,4 +142,18 @@ describe('forge-loop skill', () => {
     expect(skill.body).toContain('Never merge, and never run `forge merge`, `forge merge-gate` or `forge dispatch`');
     expect(skill.body).not.toMatch(/--as (owner|system) /);
   });
+
+  it('logs every agent run and pushes the logs to the factory-logs branch', () => {
+    expect(skill.body).toContain('`forge log-run N --agent <role> --rule <rule> --started <that time>');
+    expect(skill.body).toContain('`forge logs push`');
+  });
+});
+
+describe('forge-gate template', () => {
+  const gate = readFileSync(join(PACKAGE_ROOT, 'templates', 'forge-gate.yml'), 'utf8');
+
+  it('checks out as forge-bot and pushes its logs even when the gate fails', () => {
+    expect(gate).toMatch(/actions\/checkout@v4\n\s+with:\n\s+token: \$\{\{ steps\.app\.outputs\.token \}\}/);
+    expect(gate).toMatch(/- run: forge logs push\n\s+if: always\(\)/);
+  });
 });

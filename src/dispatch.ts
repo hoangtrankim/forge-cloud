@@ -245,6 +245,7 @@ export class Dispatcher {
       sessionId: result.sessionId,
       changed,
       summary: result.summary,
+      by: 'dispatch',
     });
     this.out(`  ${result.ok ? 'ok' : `failed (exit ${result.exitCode})`}: ${result.summary}`);
     return { step, result, changed };
