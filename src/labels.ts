@@ -1,11 +1,14 @@
 // How a Ticket is stored on an issue: labels for state and flags, body lines for links.
 // Kept tracker-neutral so a Jira adapter can reuse the body-line format.
 
+import { isRiskTier, stricter, APPROVE_LABEL, HELD_LABEL, HOLD_LABEL, type RiskTier } from './risk.js';
 import { GATES, STATES, type Gate, type GateResult, type Priority, type State, type Ticket } from './lifecycle.js';
 
 export const STATE_PREFIX = 'factory:';
 export const SPEC_LABEL = 'type:spec';
+// Read as risk:high. Tickets from before risk tiers carry it; the next write replaces it.
 export const RISKY_LABEL = 'risky';
+export const RISK_PREFIX = 'risk:';
 export const TESTS_READY_LABEL = 'qa:tests-ready';
 export const ROUND_PREFIX = 'round:';
 export const COMPONENT_PREFIX = 'component:';
@@ -22,7 +25,13 @@ export interface LabelSpec {
 export const FIXED_LABELS: LabelSpec[] = [
   ...STATES.map((s) => ({ name: STATE_PREFIX + s, color: stateColor(s), description: `Factory state: ${s}` })),
   { name: SPEC_LABEL, color: '5319e7', description: 'A spec that is split into tickets' },
-  { name: RISKY_LABEL, color: 'b60205', description: 'Touches auth, payments or security; needs the security gate' },
+  { name: `${RISK_PREFIX}low`, color: 'c2e0c6', description: 'Low risk: merges after review and QA' },
+  { name: `${RISK_PREFIX}medium`, color: 'fbca04', description: 'Medium risk: also needs the security gate' },
+  { name: `${RISK_PREFIX}high`, color: 'b60205', description: 'High risk: security gate, then held for the owner before merging' },
+  // PR labels (see risk.ts).
+  { name: HELD_LABEL, color: 'd93f0b', description: 'High risk: the gate merges this after the hold unless the owner adds hold' },
+  { name: APPROVE_LABEL, color: '0e8a16', description: 'Owner: merge this held PR now' },
+  { name: HOLD_LABEL, color: 'b60205', description: 'Stop the clock on this held PR' },
   { name: TESTS_READY_LABEL, color: '0e8a16', description: 'Blind QA tests are written from the spec' },
   ...[0, 1, 2, 3].map((p) => ({ name: `${PRIORITY_PREFIX}${p}`, color: 'fbca04', description: `Priority p${p}` })),
 ];
@@ -40,6 +49,7 @@ export function isFactoryLabel(name: string): boolean {
     name.startsWith(STATE_PREFIX) ||
     name === SPEC_LABEL ||
     name === RISKY_LABEL ||
+    name.startsWith(RISK_PREFIX) ||
     name === TESTS_READY_LABEL ||
     name.startsWith(ROUND_PREFIX) ||
     name.startsWith(COMPONENT_PREFIX) ||
@@ -51,7 +61,7 @@ export function isFactoryLabel(name: string): boolean {
 export function toLabels(t: Ticket): string[] {
   const labels = [STATE_PREFIX + t.state, `${PRIORITY_PREFIX}${t.priority}`];
   if (t.type === 'spec') labels.push(SPEC_LABEL);
-  if (t.risky) labels.push(RISKY_LABEL);
+  if (t.type === 'build') labels.push(RISK_PREFIX + t.risk);
   if (t.testsReady) labels.push(TESTS_READY_LABEL);
   if (t.round > 0) labels.push(`${ROUND_PREFIX}${t.round}`);
   for (const c of t.components) labels.push(COMPONENT_PREFIX + c);
@@ -67,7 +77,7 @@ export interface LabelFields {
   type: Ticket['type'];
   priority: Priority;
   round: number;
-  risky: boolean;
+  risk: RiskTier;
   testsReady: boolean;
   components: string[];
   gates: Ticket['gates'];
@@ -78,7 +88,7 @@ export function fromLabels(labels: string[]): LabelFields {
     type: 'build',
     priority: 2,
     round: 0,
-    risky: false,
+    risk: 'low',
     testsReady: false,
     components: [],
     gates: {},
@@ -88,7 +98,11 @@ export function fromLabels(labels: string[]): LabelFields {
       const s = l.slice(STATE_PREFIX.length);
       if ((STATES as readonly string[]).includes(s)) f.state = s as State;
     } else if (l === SPEC_LABEL) f.type = 'spec';
-    else if (l === RISKY_LABEL) f.risky = true;
+    else if (l === RISKY_LABEL) f.risk = stricter(f.risk, 'high');
+    else if (l.startsWith(RISK_PREFIX)) {
+      const r = l.slice(RISK_PREFIX.length);
+      if (isRiskTier(r)) f.risk = stricter(f.risk, r);
+    }
     else if (l === TESTS_READY_LABEL) f.testsReady = true;
     else if (l.startsWith(ROUND_PREFIX)) f.round = Number(l.slice(ROUND_PREFIX.length)) || 0;
     else if (l.startsWith(COMPONENT_PREFIX)) f.components.push(l.slice(COMPONENT_PREFIX.length));

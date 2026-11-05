@@ -28,6 +28,23 @@ import {
   type TicketType,
 } from './lifecycle.js';
 import type { CodeHost, MergeMethod, PullRequest } from './codehost.js';
+import {
+  DEFAULT_HOLD_HOURS,
+  DEFAULT_RISK_RULES,
+  HELD_LABEL,
+  HOLD_LABEL,
+  APPROVE_LABEL,
+  RISK_FILE,
+  assessDiff,
+  holdDecision,
+  holdMarker,
+  needsSecurity,
+  parseRiskRules,
+  stricter,
+  type Assessment,
+  type RiskRules,
+  type RiskTier,
+} from './risk.js';
 import type { ReviewStatusBy } from './config.js';
 import type { Comment, Tracker } from './tracker/tracker.js';
 
@@ -35,7 +52,7 @@ export class RuleError extends Error {}
 
 export interface FactoryEvent {
   at: string;
-  kind: 'create' | 'edit' | 'move' | 'mark' | 'gate' | 'close-spec' | 'note' | 'evidence' | 'pr' | 'merge';
+  kind: 'create' | 'edit' | 'move' | 'mark' | 'gate' | 'close-spec' | 'note' | 'evidence' | 'pr' | 'merge' | 'risk' | 'hold';
   file?: string;
   ticket: number;
   role: Role;
@@ -46,6 +63,7 @@ export interface FactoryEvent {
   escalated?: boolean;
   gate?: Gate;
   result?: GateResult;
+  risk?: RiskTier;
 }
 
 export interface FactoryOptions {
@@ -58,21 +76,34 @@ export interface FactoryOptions {
   // 'gate': the reviewer's pass only records the reviewed commit, and merge() posts the
   // factory/review status just before it merges (see Config.reviewStatus).
   reviewStatus?: ReviewStatusBy;
+  // The login whose hand-added `approve` label merges a held PR early.
+  owner?: string;
+  holdHours?: number;
+  // The risk rules; by default risk.yml on the base branch, read through the code host.
+  riskRules?: () => Promise<RiskRules>;
 }
+
+// What the merge gate did with a reviewed, green, QA-reported PR.
+export type GateOutcome =
+  | { kind: 'merged'; ticket: Ticket }
+  | { kind: 'back-to-review'; risk: RiskTier }
+  | { kind: 'held'; until: Date }
+  | { kind: 'waiting'; until: Date }
+  | { kind: 'on-hold'; by: string };
 
 export interface CreateInput {
   title: string;
   body?: string;
   type?: TicketType;
   priority?: Priority;
-  risky?: boolean;
+  risk?: RiskTier;
   components?: string[];
   blockedBy?: number[];
   covers?: string[];
   spec?: number;
 }
 
-export type EditInput = Partial<Pick<Ticket, 'title' | 'body' | 'priority' | 'risky' | 'components' | 'blockedBy' | 'covers'>>;
+export type EditInput = Partial<Pick<Ticket, 'title' | 'body' | 'priority' | 'risk' | 'components' | 'blockedBy' | 'covers'>>;
 
 export interface MoveInput {
   to: State;
@@ -119,7 +150,7 @@ export class Factory {
       type,
       state: type === 'spec' ? 'spec' : 'planned',
       priority: input.priority ?? 2,
-      risky: input.risky ?? false,
+      risk: input.risk ?? 'low',
       components: input.components ?? [],
       blockedBy: input.blockedBy ?? [],
       covers: input.covers ?? [],
@@ -142,7 +173,14 @@ export class Factory {
   }
 
   async move(id: number, input: MoveInput): Promise<Ticket> {
-    const ticket = await this.tracker.get(id);
+    let ticket = await this.tracker.get(id);
+    // Handing a PR to review, and passing it, both look at what it changes: the tier only
+    // goes up, and a raised tier can refuse the pass below until security has run.
+    const handIn = input.to === 'in-review' && input.role === 'builder';
+    const pass = input.to === 'in-qa' && input.role === 'reviewer';
+    if ((handIn || pass) && ticket.type === 'build' && this.opts.codeHost && (input.pr ?? ticket.pr)) {
+      ticket = await this.raiseRisk(ticket, await this.assess(input.pr ?? ticket.pr!));
+    }
     const openBlockers = await this.openBlockers(ticket);
     check(canMove(ticket, input, { openBlockers }));
     if (input.to === 'in-qa') await this.checkReviewedHead(ticket, input.sha!);
@@ -173,6 +211,110 @@ export class Factory {
       escalated,
     });
     return saved;
+  }
+
+  private rulesCache?: Promise<RiskRules>;
+
+  // risk.yml from the base branch, never the PR's own copy, so a PR cannot loosen its own path.
+  riskRules(): Promise<RiskRules> {
+    this.rulesCache ??= this.opts.riskRules
+      ? this.opts.riskRules()
+      : (async () => {
+          const text = await this.host().readFile(RISK_FILE, this.opts.baseBranch ?? 'main');
+          return text === undefined ? DEFAULT_RISK_RULES : parseRiskRules(text);
+        })();
+    return this.rulesCache;
+  }
+
+  // The tier the PR's changes call for, from risk.yml.
+  async assess(prNumber: number): Promise<Assessment> {
+    return assessDiff(await this.host().files(prNumber), await this.riskRules());
+  }
+
+  async assessTicket(id: number): Promise<{ ticket: Ticket; assessment: Assessment; tier: RiskTier }> {
+    const ticket = await this.tracker.get(id);
+    const assessment = await this.assess(await this.prOf(id));
+    return { ticket, assessment, tier: stricter(ticket.risk, assessment.tier) };
+  }
+
+  // Raises the ticket's tier to what its PR calls for, if that is stricter, and says why.
+  private async raiseRisk(ticket: Ticket, a: Assessment): Promise<Ticket> {
+    const tier = stricter(ticket.risk, a.tier);
+    if (tier === ticket.risk) return ticket;
+    const saved = await this.tracker.update({ ...ticket, risk: tier });
+    const why = a.reasons.length ? `\n\n${a.reasons.map((r) => `- ${r}`).join('\n')}` : '';
+    const then = needsSecurity(tier) && ticket.gates.security !== 'pass' ? ' It needs the security gate before its review can pass.' : '';
+    await this.tracker.comment(ticket.id, `**system** raised the risk from \`${ticket.risk}\` to \`${tier}\`: PR #${ticket.pr} changes what \`${RISK_FILE}\` rates ${tier}.${then}${why}`);
+    this.emit({ kind: 'risk', ticket: ticket.id, role: 'system', risk: tier });
+    return saved;
+  }
+
+  // The merge gate's step for a reviewed, green, QA-reported PR. The tier is checked again
+  // from the diff (a prompt cannot skip this), then low and medium merge, and high is held
+  // for the owner: it merges once the hold has run out, or at once when the owner approves.
+  async gateMerge(id: number, now = this.opts.now?.() ?? new Date()): Promise<GateOutcome> {
+    const host = this.host();
+    let ticket = await this.tracker.get(id);
+    const prNumber = ticket.pr;
+    if (!prNumber) throw new RuleError(`#${id} has no PR`);
+    ticket = await this.raiseRisk(ticket, await this.assess(prNumber));
+    if (needsSecurity(ticket.risk) && ticket.gates.security !== 'pass') {
+      await this.move(id, {
+        to: 'in-review',
+        role: 'system',
+        note: `PR #${prNumber} is \`${ticket.risk}\` risk and has not passed the security gate, so it goes back to review for it.`,
+      });
+      return { kind: 'back-to-review', risk: ticket.risk };
+    }
+    if (ticket.risk !== 'high') return { kind: 'merged', ticket: await this.merge(id, 'system') };
+
+    const pr = await host.getPr(prNumber);
+    const marker = holdMarker(pr.headSha);
+    const comments = await this.tracker.comments(id);
+    const heldAt = comments.filter((c) => c.body.startsWith('**system**') && c.body.includes(marker)).at(-1)?.createdAt;
+    const hours = this.opts.holdHours ?? DEFAULT_HOLD_HOURS;
+    const owner = this.opts.owner;
+    const { decision, remove } = holdDecision({
+      labels: await host.labels(pr.number),
+      events: await host.labelEvents(pr.number),
+      owner: owner ?? '',
+      heldAt,
+      hours,
+      now,
+    });
+    for (const label of remove) {
+      await host.removeLabel(pr.number, label);
+      await this.tracker.comment(id, `**system** took \`${label}\` off PR #${pr.number}: only ${owner ? `@${owner}` : 'the owner'}, adding it by hand after the hold started, can approve a held PR.`);
+    }
+    const mention = owner ? `@${owner}` : 'Owner';
+    switch (decision.kind) {
+      case 'start': {
+        const until = new Date(now.getTime() + hours * 3600 * 1000);
+        await host.addLabel(pr.number, HELD_LABEL);
+        await this.tracker.comment(
+          id,
+          `**system** ${marker}. ${mention}: PR #${pr.number} is \`high\` risk. It passed review, security and QA, and it merges at ${stamp(until)} unless you add the \`${HOLD_LABEL}\` label to PR #${pr.number}. Add \`${APPROVE_LABEL}\` to merge it now.`,
+        );
+        this.emit({ kind: 'hold', ticket: id, role: 'system', risk: 'high' });
+        return { kind: 'held', until };
+      }
+      case 'wait':
+        return { kind: 'waiting', until: decision.until };
+      case 'on-hold': {
+        const said = `On hold at ${pr.headSha}`;
+        if (!comments.some((c) => c.body.startsWith('**system**') && c.body.includes(said))) {
+          await this.tracker.comment(
+            id,
+            `**system** ${said}: @${decision.by} added \`${HOLD_LABEL}\` to PR #${pr.number}, so it will not merge. Take the label off to restart the ${hours}-hour clock, or send it back: \`forge move ${id} building --as owner --reason <reason> --note "<what to change>"\`.`,
+          );
+        }
+        return { kind: 'on-hold', by: decision.by };
+      }
+      case 'approved':
+        return { kind: 'merged', ticket: await this.merge(id, 'system', `High risk: merged early, approved by @${decision.by}.`) };
+      case 'due':
+        return { kind: 'merged', ticket: await this.merge(id, 'system', `High risk: merged after the ${hours}-hour hold with no \`${HOLD_LABEL}\`.`) };
+    }
   }
 
   // The reviewer must have read the commit the PR points at now, or the pass would cover
@@ -272,9 +414,9 @@ export class Factory {
     return pr;
   }
 
-  // Merges the reviewed commit once CI is green, then marks the ticket done. A risky ticket
-  // merges too, with a note asking the owner to look at it afterwards.
-  async merge(id: number, role: Role): Promise<Ticket> {
+  // Merges the reviewed commit once CI is green, then marks the ticket done. The gate calls
+  // this through gateMerge, which holds high-risk PRs first; the owner may call it directly.
+  async merge(id: number, role: Role, extra?: string): Promise<Ticket> {
     const host = this.host();
     const ticket = await this.tracker.get(id);
     if (!ticket.pr) throw new RuleError(`#${id} has no PR`);
@@ -296,7 +438,7 @@ export class Factory {
     const who = role === 'owner' ? 'the owner' : 'the factory';
     let note = `PR #${pr.number} merged by ${who} (${method}) at the reviewed commit ${pr.headSha}, with every check green.`;
     if (dropped) note += ` Branch \`${pr.head}\` deleted.`;
-    if (ticket.risky) note += `\n\nThis ticket is marked risky. It merged automatically; the owner should look at it afterwards.`;
+    if (extra) note += `\n\n${extra}`;
     return this.move(id, { to: 'done', role: 'system', note });
   }
 
@@ -346,3 +488,5 @@ export class Factory {
     return open;
   }
 }
+
+const stamp = (d: Date) => `${d.toISOString().slice(0, 16).replace('T', ' ')} UTC`;

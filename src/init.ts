@@ -6,6 +6,7 @@ import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CONFIG_FILE } from './config.js';
 import { GUARD_MATCHER } from './guard.js';
+import { RISK_FILE } from './risk.js';
 
 // src/ and dist/ both sit one level below the package root.
 export const PACKAGE_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -47,6 +48,7 @@ export function init(target: string, opts: { force?: boolean; repo?: string; sou
 
   const gate = join(source, 'templates', 'forge-gate.yml');
   place(gate, join(target, '.github', 'workflows', 'forge-gate.yml'));
+  place(join(source, 'templates', RISK_FILE), join(target, RISK_FILE));
 
   const config = [
     '# System factory settings. See https://github.com/hoangtrankim/system-factory',
@@ -58,6 +60,9 @@ export function init(target: string, opts: { force?: boolean; repo?: string; sou
     '# Who posts the factory/review status: reviewer (its pass) or gate (the merge gate, right',
     '# before it merges). Use gate when a Claude session dispatches, since it cannot post statuses.',
     'reviewStatus: gate',
+    '# High-risk PRs (see risk.yml) wait this many hours for the owner before the gate merges them.',
+    '# Only owner (default: the repo owner) adding `approve` by hand merges one early.',
+    'holdHours: 24',
     '# Component name -> paths it owns. Tickets are tagged with these names; the reviewer',
     '# checks that a PR stays inside its components (tests/ is always allowed).',
     'components:',

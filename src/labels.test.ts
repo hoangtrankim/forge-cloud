@@ -10,7 +10,7 @@ const t: Ticket = {
   state: 'in-review',
   priority: 1,
   round: 2,
-  risky: true,
+  risk: 'high',
   testsReady: true,
   gates: { security: 'pass' },
   components: ['api', 'ui'],
@@ -27,7 +27,7 @@ describe('labels', () => {
     expect(labels).toEqual([
       'factory:in-review',
       'priority:p1',
-      'risky',
+      'risk:high',
       'qa:tests-ready',
       'round:2',
       'component:api',
@@ -39,7 +39,7 @@ describe('labels', () => {
       type: 'build',
       priority: 1,
       round: 2,
-      risky: true,
+      risk: 'high',
       testsReady: true,
       components: ['api', 'ui'],
       gates: { security: 'pass' },
@@ -51,6 +51,15 @@ describe('labels', () => {
     expect(f.state).toBeUndefined();
     expect(f.priority).toBe(2);
     expect(f.round).toBe(0);
+  });
+
+  it('reads the old risky label as high, and the strictest risk label wins', () => {
+    expect(fromLabels(['factory:planned', 'risky']).risk).toBe('high');
+    expect(fromLabels(['factory:planned', 'risk:medium', 'risk:low']).risk).toBe('medium');
+    expect(fromLabels(['factory:planned', 'risk:bogus']).risk).toBe('low');
+    expect(toLabels({ ...t, type: 'spec' })).not.toContain('risk:high');
+    expect(isFactoryLabel('risky')).toBe(true);
+    expect(isFactoryLabel('risk:low')).toBe(true);
   });
 
   it('knows which labels it owns', () => {

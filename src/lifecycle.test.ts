@@ -25,7 +25,7 @@ function ticket(over: Partial<Ticket> = {}): Ticket {
     state: 'planned',
     priority: 2,
     round: 0,
-    risky: false,
+    risk: 'low',
     testsReady: false,
     gates: {},
     components: [],
@@ -97,7 +97,7 @@ describe('canMove', () => {
   });
 
   it('holds a risky ticket in review until the security gate passes', () => {
-    const t = ticket({ state: 'in-review', risky: true, pr: 3 });
+    const t = ticket({ state: 'in-review', risk: 'high', pr: 3 });
     expect(canMove(t, { to: 'in-qa', role: 'reviewer', sha: SHA }).ok).toBe(false);
     expect(canMove({ ...t, gates: { security: 'pass' } }, { to: 'in-qa', role: 'reviewer', sha: SHA }).ok).toBe(true);
   });

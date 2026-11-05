@@ -2,6 +2,7 @@
 // later implements the same methods and nothing else changes.
 
 import type { Priority, State, Ticket, TicketType } from '../lifecycle.js';
+import type { RiskTier } from '../risk.js';
 
 export interface NewTicket {
   title: string;
@@ -9,7 +10,7 @@ export interface NewTicket {
   type: TicketType;
   state: State;
   priority: Priority;
-  risky: boolean;
+  risk: RiskTier;
   components: string[];
   blockedBy: number[];
   covers: string[];

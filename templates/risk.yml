@@ -1,0 +1,37 @@
+# Risk tiers for this repo's factory PRs (see https://github.com/hoangtrankim/forge-cloud).
+#
+# The merge gate rates each file a PR changes: the strictest rule that matches it wins, and a
+# file no rule matches gets `default`. The strictest file sets the PR's tier, a PR with more
+# than maxLowLines changed lines (outside sizeIgnore) is at least medium, and the planner's
+# tier on the ticket counts too. Nothing lowers a tier.
+#
+#   low     review and QA, then the gate merges it
+#   medium  also needs the security gate
+#   high    security gate, then held for the owner: it merges after holdHours (factory.config.yml)
+#           unless the owner adds the `hold` label to the PR; `approve` merges it now
+#
+# Globs: `**` crosses folders, `*` does not; a pattern with no `/` matches a file name in any
+# folder. The gate reads this file from the base branch, so a PR cannot loosen its own tier,
+# and `.github/workflows/**`, `.claude/**`, factory.config.yml and risk.yml are always high.
+default: medium
+maxLowLines: 300
+sizeIgnore:
+  - tests/**
+high:
+  - .github/**
+  - .claude/**
+  - factory.config.yml
+  - risk.yml
+  - package.json
+  - package-lock.json
+  - '**/*auth*'
+  - '**/*auth*/**'
+  - '**/*session*'
+  - '**/*session*/**'
+  - '**/*payment*'
+  - '**/*payment*/**'
+medium: []
+low:
+  - tests/**
+  - docs/**
+  - '*.md'

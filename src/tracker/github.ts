@@ -71,7 +71,7 @@ export function issueToTicket(issue: GhIssue): Ticket | undefined {
     state: f.state,
     priority: f.priority,
     round: f.round,
-    risky: f.risky,
+    risk: f.risk,
     testsReady: f.testsReady,
     gates: f.gates,
     components: f.components,

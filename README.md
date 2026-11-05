@@ -63,7 +63,7 @@ To update both mods: `claude plugin marketplace update forge-cloud && claude plu
 
 The rest of this README comes from system-factory, updated for forge-cloud. Where it talks about the dispatcher, the forge-loop session runs the agent steps and the gate runs the merge steps; `forge dispatch` on one machine is still there as a fallback.
 
-An autonomous spec-to-PR workflow built on Claude Code. You agree a spec with the Grill. After that, agents split it into tickets, then design, test, build, review and QA each ticket, with one PR per ticket. Nobody reviews the PRs by hand: rules in code, a security gate for risky work, blind acceptance tests and CI decide.
+An autonomous spec-to-PR workflow built on Claude Code. You agree a spec with the Grill. After that, agents split it into tickets, then design, test, build, review and QA each ticket, with one PR per ticket. Nobody reviews the PRs by hand: rules in code, a security gate for medium and high risk work, blind acceptance tests and CI decide. High-risk PRs give the owner a day to object before they merge.
 
 The core idea: **judgement lives in prompts, rules live in code, state lives in the tracker.** Agents never edit labels themselves. They call the `forge` CLI, which refuses any move the rules don't allow.
 
@@ -88,27 +88,44 @@ Design doc: https://claude.ai/artifact/Kqw238YaXngzZFgXsEv4fn
  you + Grill          Planner           per ticket (one PR each)                                   you
  ───────────    ───────────────    ─────────────────────────────────────────────────────────    ─────
  idea → spec ─▶ spec → tickets ─▶ Designer → QA writer → Builder → [Security] → Reviewer → QA ─▶ merge
- (AC-1, AC-2…)  (covers, blockers,  design    blind       PR        risky      read-only   CI      │
-                 priority, risky)   note      tests                 only       review    evidence  ▼
+ (AC-1, AC-2…)  (covers, blockers,  design    blind       PR       medium +    read-only   CI      │
+                 priority, risk)    note      tests                high only   review    evidence  ▼
                                                                                          ticket done
                                        ◀────── send-back with a typed reason (round +1) ──────┘
  Planner again: when every ticket is done, files review follow-ups as tickets or closes the spec
 ```
 
 1. **Grill** (`/factory-grill` in Claude Code). It questions you one at a time, each with a suggested default, until every behaviour is testable. It writes the spec with numbered `AC-n` criteria and files it as a GitHub issue labelled `type:spec`.
-2. **Plan.** The planner splits the spec into PR-sized tickets. Each ticket names the criteria it covers, its components (from `factory.config.yml`), its priority and its blockers. Tickets touching the same component block each other so they never run at once. Risky tickets are marked `risky` (see below).
+2. **Plan.** The planner splits the spec into PR-sized tickets. Each ticket names the criteria it covers, its components (from `factory.config.yml`), its priority and its blockers. Tickets touching the same component block each other so they never run at once. Each ticket gets a risk tier, `risk:low`, `risk:medium` or `risk:high` (see [risk tiers](#risk-tiers)).
 3. **Design.** The designer writes a short design note on the ticket covering the public interface, test setup, files, approach and risks. The public interface names every control's role and accessible name, plus each route's status codes.
 4. **Blind tests.** The QA writer reads only the spec and the design note's public interface (`forge interface N`), never the code. It writes acceptance tests under `tests/acceptance/`, pushes them to branch `ticket-N`, and marks the ticket `tests-ready`. The builder can never change these tests.
 5. **Build.** In its own worktree on top of those tests, the builder makes them pass and adds its own tests. It opens the PR with `forge pr`. If an acceptance test is wrong, it sends the ticket back to the QA writer (`flawed-test`) rather than working around it.
-6. **Security gate** (risky tickets only). A read-only security reviewer passes or fails the PR. A fail sends it back and costs a round. It also writes a risk note for the owner's weekly digest.
+6. **Security gate** (medium and high risk only). A read-only security reviewer passes or fails the PR. A fail sends it back and costs a round. It also writes a risk note for the owner's weekly digest.
 7. **Review.** A read-only reviewer checks the PR against the spec, the design note, the ticket's components and the acceptance-test commits, a fixed list of quality rules, and runs the tests. Blocking findings send the ticket back with a typed reason. Minor ones become **Follow-ups**. A pass covers one commit only (see [the review gate](#the-review-gate)).
 8. **QA.** The QA reporter reads CI on the PR's head commit and posts per-test evidence on the ticket. Red CI sends the ticket back.
-9. **Merge.** The merge gate (or `forge dispatch` on one machine) merges the PR once the reviewed commit is green and the QA evidence is posted (see [auto-merge](#auto-merge)), then marks the ticket done, which unblocks the next one, and deletes the `ticket-N` branch. Nobody needs to review the PR.
+9. **Merge.** The merge gate (or `forge dispatch` on one machine) merges the PR once the reviewed commit is green and the QA evidence is posted (see [auto-merge](#auto-merge)), then marks the ticket done, which unblocks the next one, and deletes the `ticket-N` branch. Nobody needs to review the PR. A high-risk PR is held for the owner first, and merges a day later unless they object.
 10. **Close.** When every ticket is done, the planner files the real follow-ups as new tickets, or closes the spec.
 
 A ticket sent back 3 times goes to `needs-human`. So does any question an agent cannot answer. Agents never guess past a gap in the spec.
 
-**Risky** means login or sessions, permissions or one user reaching another's data, payments, secrets, personal data, or bulk or irreversible deletion. A user deleting one of their own items is not risky. Risky tickets still merge without a human, but only after the security gate, and the merge note on the ticket asks the owner to look at it afterwards.
+### Risk tiers
+
+Every ticket has a tier, and the tier only ever adds gates:
+
+| Tier | Typical change | Before merge | Merge |
+| --- | --- | --- | --- |
+| `low` | UI, tests, docs, areas `risk.yml` rates low | CI, review, QA | at once |
+| `medium` | server logic, files no rule matches, PRs over 300 lines | CI, security, review, QA | at once |
+| `high` | login, permissions, payments, secrets, personal data, bulk deletes; CI, guard and factory files; dependencies | CI, security, review, QA | held `holdHours` (default 24) for the owner |
+
+The tier is the strictest of two views, and neither can lower the other. The planner sets one from what the ticket is meant to do (`--risk`). `forge` rates the files the PR changes against `risk.yml` (read from the base branch, so a PR cannot loosen its own path): the strictest matching rule wins per file, a file no rule matches gets `default`, and more than `maxLowLines` changed lines outside `sizeIgnore` makes the PR at least medium. It does this when the builder hands the PR in, when the reviewer passes it, and in the merge gate right before merging; a raised tier is explained on the ticket, and a medium or high PR without a security pass goes back to review. `.github/workflows/**`, `.claude/**`, `factory.config.yml` and `risk.yml` are always high. `forge risk N` prints the tier and why. `forge init` writes a starter `risk.yml`; with none, the defaults in `src/risk.ts` apply.
+
+**The hold.** When a high PR is reviewed, green and QA-reported, the gate labels it `held` and comments on the ticket (`Held at <sha>`, mentioning the owner) with the time it will merge. On the hourly run after that time it merges, unless:
+
+- the PR has the `hold` label (from anyone): it waits, and says so once. Taking `hold` off restarts the clock. To send it back instead, run `forge move N building --as owner --reason <reason> --note "<what to change>"` from a terminal.
+- the owner added `approve` by hand after the hold started: it merges on the next gate run (the label starts one). An `approve` added through an app (a Claude session, forge-bot) or by anyone else is taken off with a comment; one from before a new commit does not count.
+
+A new commit restarts everything: review, QA and a fresh hold. `owner` (default: the repo owner) and `holdHours` live in `factory.config.yml`.
 
 ## Run it
 
@@ -116,7 +133,7 @@ Set the repo up as in [Set up a repo](#set-up-a-repo). Then, for each piece of w
 
 1. In Claude Code in the target repo, run `/factory-grill` and agree the spec.
 2. In a Claude Code session in the same repo, say "run the factory". The forge-loop skill runs each agent as a subagent; the Forge pane shows where every ticket is.
-3. That's it: the gate merges green, reviewed PRs on its own. Look at what the Needs you box lists, and at the risky tickets' merge notes.
+3. That's it: the gate merges green, reviewed PRs on its own. Look at what the Needs you box lists. A high-risk PR mentions you when it is held; add `hold` to it within the hold to stop it, `approve` to merge it now, or do nothing.
 
 `forge steps` shows the next agent step at any time, `forge merge-gate --dry-run` what the gate would do next, and `forge list --all` every ticket.
 
@@ -132,9 +149,9 @@ A step-by-step runbook for todo-app: https://claude.ai/artifact/CYF2fR38JET9qbkC
 2. `in-qa` with a merged PR (merged by hand) → the dispatcher marks it done.
 3. `in-qa` whose PR head is not the reviewed commit → back to `in-review` (no round spent).
 4. `in-qa` at the reviewed commit, but the PR is behind `main` → the dispatcher merges `main` into the PR and sends it back to `in-review` (no round spent).
-5. `in-qa` at the reviewed commit, every check green, QA note posted for that commit → the dispatcher merges it and marks it done.
+5. `in-qa` at the reviewed commit, every check green, QA note posted for that commit → the dispatcher rates the diff again, then merges it and marks it done (a high one only once its [hold](#risk-tiers) is over).
 6. `in-qa` with CI finished and no QA note for the head SHA → qa-reporter.
-7. Risky `in-review` without a passed gate → security.
+7. Medium or high `in-review` without a passed gate → security.
 8. Other `in-review` → reviewer.
 9. `building` (a send-back, or a build that stopped) → builder.
 10. `designed` with tests ready and blockers done → builder.
@@ -160,7 +177,7 @@ Merging is a rule, not a judgement, so no agent does it. Once the qa-reporter ha
 - the PR head is the commit the reviewer passed (`Reviewed: <sha>`);
 - every check on that commit has finished and passed.
 
-Then it merges over REST (`PUT /pulls/N/merge`) pinned to that commit, so a push that lands in between makes GitHub refuse the merge instead of merging unreviewed code. Branch protection checks again on GitHub's side (required `test` and `factory/review`, branch up to date). On success the ticket moves to `done` with a note naming the commit; a risky ticket's note asks the owner to look at it afterwards. If GitHub refuses (a conflict, a missing required check), the ticket goes to `needs-human` with GitHub's reason.
+Then it merges over REST (`PUT /pulls/N/merge`) pinned to that commit, so a push that lands in between makes GitHub refuse the merge instead of merging unreviewed code. Branch protection checks again on GitHub's side (required `test` and `factory/review`, branch up to date). On success the ticket moves to `done` with a note naming the commit; a high-risk ticket's note says whether it merged after the hold or by the owner's `approve`. If GitHub refuses (a conflict, a missing required check), the ticket goes to `needs-human` with GitHub's reason.
 
 A PR that is behind `main` (another ticket merged first, and branch protection wants branches up to date) is not merged as it is. The dispatcher calls `PUT /pulls/N/update-branch`, pinned to the reviewed commit, and moves the ticket back to `in-review`. The merge commit is new code to the reviewer and to CI, so it goes through review, checks and QA again before it can merge, without costing a round. If `main` does not merge cleanly, the ticket goes to `needs-human`.
 
@@ -197,8 +214,8 @@ Each role is a Claude Code subagent in `agents/`, and the Grill is a skill in `s
 | `factory-designer` | `planned` | design note: public interface with test setup, files, approach, risks (must / should) | read + temp files |
 | `factory-qa-writer` | `designed` without tests | blind acceptance tests and the test setup they need, pushed to `ticket-N` | no `Grep` or `Edit`; never reads app code |
 | `factory-builder` | ready tickets and send-backs | builds in a worktree, opens the PR; never touches `tests/acceptance/` | full |
-| `factory-security` | risky tickets in `in-review` | security gate pass or fail, plus a risk note | read only, opus |
-| `factory-reviewer` | `in-review` (after security on risky) | fresh review against spec, design and scope; runs the tests; blocking findings or follow-ups | read only, opus |
+| `factory-security` | medium and high risk tickets in `in-review` | security gate pass or fail, plus a risk note | read only, opus |
+| `factory-reviewer` | `in-review` (after security on medium and high) | fresh review against spec, design and scope; runs the tests; blocking findings or follow-ups | read only, opus |
 | `factory-qa-reporter` | `in-qa` with CI finished | per-test evidence from CI; red CI goes back | read only |
 
 Read-only agents still have `Bash`, so they can run `forge`, `git` and tests. The prompts forbid writes, and [the guard hook](#the-guard-hook) blocks them mechanically.
@@ -224,11 +241,11 @@ side states: blocked, needs-human
 | planned → designed | designer | |
 | designed → building | builder | blind QA tests are marked ready, every `Blocked by` ticket is done |
 | building → in-review | builder | a PR is given, and every check on its head has finished green |
-| in-review → in-qa | reviewer | a `risky` ticket has passed the security gate; `--sha` is the PR's current head commit |
+| in-review → in-qa | reviewer | a medium or high ticket (after the diff check) has passed the security gate; `--sha` is the PR's current head commit |
 | in-qa → in-review | system (the gate or the dispatcher) | the PR has commits the reviewer did not pass; no round is spent |
 | in-qa → done | system (the gate or the dispatcher) | the PR is linked; done after it merges the PR, or once the owner has |
 | in-review → building | reviewer, security | a send-back reason; round + 1 |
-| in-qa → building | qa-reporter, system | a send-back reason; round + 1 |
+| in-qa → building | qa-reporter, system, owner | a send-back reason; round + 1 (the owner's, for a held PR) |
 | building / in-review → designed | builder, reviewer | reason `flawed-test` only; round + 1, tests-ready cleared, so the QA writer fixes the test |
 | any → blocked | any agent, owner | a reason |
 | any → needs-human | any agent, owner, system | a reason |
@@ -250,7 +267,9 @@ Only the grill or owner file specs. Only the planner or owner file tickets, edit
 | Type | `type:spec` label (none means a build ticket) |
 | Priority | `priority:p0` … `priority:p3` (none means p2) |
 | Round | `round:N` |
-| Flags | `risky`, `qa:tests-ready` |
+| Risk tier | `risk:low`, `risk:medium` or `risk:high` (an older `risky` label reads as high) |
+| Flags | `qa:tests-ready` |
+| Hold (on the PR) | `held` (the gate), `approve` and `hold` (the owner); the ticket's `Held at <sha>` comment starts the clock |
 | Components | `component:<name>` |
 | Gate results | `gate:security:pass` or `:fail`, cleared on every send-back |
 | Links | body lines `Spec: #1`, `Covers: AC-1, AC-2`, `Blocked by: #3`, `PR: #12` |
@@ -272,8 +291,9 @@ forge next                                 # tickets a builder may start now
 forge spec-status S                        # criteria, uncovered, open tickets
 
 forge create --as grill --type spec --title T --body-file F
-forge create --as planner --spec S --title T --covers AC-1,AC-2 --component ui [--blocked-by 2] [--priority p1] [--risky]
-forge edit N --as planner [--risky | --not-risky] [--component C] [--covers ...] [--blocked-by ...]
+forge create --as planner --spec S --title T --covers AC-1,AC-2 --component ui [--blocked-by 2] [--priority p1] [--risk low|medium|high]
+forge edit N --as planner [--risk low|medium|high] [--component C] [--covers ...] [--blocked-by ...]
+forge risk N [--json]                      # the tier the PR's files call for under risk.yml, and why
 forge move N <state> --as R [--reason R] [--note-file F] [--pr P] [--sha SHA]   # a reviewer pass needs --sha
 forge tests-ready N --as qa-writer --note-file F
 forge gate N security pass|fail --as security [--reason R] --note-file F

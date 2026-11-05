@@ -8,6 +8,9 @@ export class MemoryTracker implements Tracker {
   private nextId = 1;
   readonly posted = new Map<number, string[]>();
   readonly uploads = new Map<string, Buffer>();
+  private readonly times = new Map<number, string[]>();
+  // When a comment is posted. By default comment i is i seconds after 1970, in order.
+  now?: () => Date;
 
   async setup(): Promise<void> {}
 
@@ -46,12 +49,15 @@ export class MemoryTracker implements Tracker {
 
   async comment(id: number, body: string): Promise<void> {
     await this.get(id);
+    const at = (this.now?.() ?? new Date((this.posted.get(id)?.length ?? 0) * 1000)).toISOString();
     this.posted.set(id, [...(this.posted.get(id) ?? []), body]);
+    this.times.set(id, [...(this.times.get(id) ?? []), at]);
   }
 
   async comments(id: number): Promise<Comment[]> {
     await this.get(id);
-    return (this.posted.get(id) ?? []).map((body, i) => ({ author: 'factory', body, createdAt: new Date(i * 1000).toISOString() }));
+    const times = this.times.get(id) ?? [];
+    return (this.posted.get(id) ?? []).map((body, i) => ({ author: 'factory', body, createdAt: times[i] ?? new Date(i * 1000).toISOString() }));
   }
 
   async close(id: number): Promise<void> {

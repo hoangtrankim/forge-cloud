@@ -64,7 +64,7 @@ describe('GitHubTracker', () => {
     const t = await tracker.get(5);
     await tracker.update({ ...t, state: 'designed', pr: 9, round: 1 });
     const body = calls.at(-1)?.body as { labels: string[]; body: string; state: string };
-    expect(body.labels).toEqual(['bug', 'factory:designed', 'priority:p2', 'round:1']);
+    expect(body.labels).toEqual(['bug', 'factory:designed', 'priority:p2', 'risk:low', 'round:1']);
     expect(body.body).toContain('PR: #9');
     expect(body.body).toContain('Do it');
     expect(body.state).toBe('open');
@@ -84,7 +84,8 @@ describe('GitHubTracker', () => {
     const created = calls.filter((c) => c.method === 'POST').map((c) => (c.body as { name: string }).name);
     expect(created).not.toContain('factory:spec');
     expect(created).toContain('factory:planned');
-    expect(created).toContain('risky');
+    expect(created).toEqual(expect.arrayContaining(['risk:low', 'risk:medium', 'risk:high', 'held', 'approve', 'hold']));
+    expect(created).not.toContain('risky');
   });
 
   it('creates an issue with labels and link lines', async () => {
@@ -100,13 +101,13 @@ describe('GitHubTracker', () => {
       type: 'build',
       state: 'planned',
       priority: 1,
-      risky: true,
+      risk: 'high',
       components: ['ui'],
       blockedBy: [3],
       covers: ['AC-1'],
       spec: 1,
     });
-    expect(t).toMatchObject({ id: 12, state: 'planned', risky: true, blockedBy: [3], spec: 1, components: ['ui'] });
+    expect(t).toMatchObject({ id: 12, state: 'planned', risk: 'high', blockedBy: [3], spec: 1, components: ['ui'] });
     expect((calls[0]?.body as { body: string }).body).toBe('Do it\nSpec: #1\nCovers: AC-1\nBlocked by: #3\n');
   });
 
@@ -153,5 +154,43 @@ describe('GitHubCodeHost.updateBranch', () => {
     await host.updateBranch(7, 'abc');
     expect(calls[0]).toEqual({ method: 'PUT', path: 'repos/o/r/pulls/7/update-branch', body: { expected_head_sha: 'abc' } });
     expect((await host.getPr(7)).behind).toBe(true);
+  });
+});
+
+describe('GitHubCodeHost risk and labels', () => {
+  it('reads changed files, a file on a branch, and who labeled the PR how', async () => {
+    const { gh, calls } = fakeGh({
+      'GET repos/o/r/pulls/5/files?per_page=100': () => [
+        { filename: 'server.js', additions: 3, deletions: 1 },
+        { filename: 'public/new.js', previous_filename: 'public/old.js', additions: 0, deletions: 0 },
+      ],
+      'GET repos/o/r/contents/risk.yml?ref=main': () => ({ content: Buffer.from('default: low\n').toString('base64'), encoding: 'base64' }),
+      'GET repos/o/r/issues/5/labels?per_page=100': () => [{ name: 'held' }],
+      'GET repos/o/r/issues/5/events?per_page=100': () => [
+        { event: 'labeled', label: { name: 'held' }, actor: { login: 'forge-bot[bot]' }, performed_via_github_app: { slug: 'forge-bot' }, created_at: '2026-11-05T10:00:00Z' },
+        { event: 'labeled', label: { name: 'approve' }, actor: { login: 'hoang' }, performed_via_github_app: null, created_at: '2026-11-05T11:00:00Z' },
+        { event: 'referenced', actor: { login: 'hoang' }, created_at: '2026-11-05T11:30:00Z' },
+      ],
+      'POST repos/o/r/issues/5/labels': () => [],
+      'DELETE repos/o/r/issues/5/labels/approve': () => {
+        throw new GhError('gone', 404);
+      },
+    });
+    const host = new GitHubCodeHost('o/r', gh);
+    expect(await host.files(5)).toEqual([
+      { path: 'server.js', additions: 3, deletions: 1 },
+      { path: 'public/new.js', previousPath: 'public/old.js', additions: 0, deletions: 0 },
+    ]);
+    expect(await host.readFile('risk.yml', 'main')).toBe('default: low\n');
+    expect(await host.readFile('missing.yml', 'main')).toBeUndefined();
+    expect(await host.labels(5)).toEqual(['held']);
+    expect(await host.labelEvents(5)).toEqual([
+      { event: 'labeled', label: 'held', actor: 'forge-bot[bot]', viaApp: 'forge-bot', at: '2026-11-05T10:00:00Z' },
+      { event: 'labeled', label: 'approve', actor: 'hoang', at: '2026-11-05T11:00:00Z' },
+    ]);
+    await host.addLabel(5, 'held');
+    expect(calls.at(-1)?.body).toEqual({ labels: ['held'] });
+    // A label someone already took off is fine.
+    await host.removeLabel(5, 'approve');
   });
 });

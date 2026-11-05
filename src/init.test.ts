@@ -29,6 +29,20 @@ describe('init', () => {
     // Rules only: no agent runs here, so no Claude login either.
     expect(workflow).not.toMatch(/CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY|claude -p/);
     expect(loadConfig(dir).reviewStatus).toBe('gate');
+    expect(loadConfig(dir).holdHours).toBe(24);
+    // Held PRs need a clock, and the owner's labels on a PR start a run.
+    expect(workflow).toContain("cron: '17 * * * *'");
+    expect(workflow).toContain('pull_request_target');
+  });
+
+  it('installs a starter risk.yml that forge can read', async () => {
+    const dir = tmp();
+    expect(init(dir).written).toContain('risk.yml');
+    const { parseRiskRules, fileTier } = await import('./risk.js');
+    const rules = parseRiskRules(readFileSync(join(dir, 'risk.yml'), 'utf8'));
+    expect(rules.default).toBe('medium');
+    expect(fileTier('src/auth/login.js', rules).tier).toBe('high');
+    expect(fileTier('README.md', rules).tier).toBe('low');
   });
 
   it('adds the guard hook to the project settings once, keeping what is there', () => {

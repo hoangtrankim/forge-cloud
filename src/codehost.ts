@@ -1,7 +1,8 @@
 // Pull requests and CI live on the code host, which stays GitHub even if tickets move to Jira.
 // Agents use these through the CLI because `gh pr ...` needs GraphQL, which some networks block.
 
-import { ghCli, type GhApi } from './tracker/github.js';
+import type { ChangedFile, LabelEvent } from './risk.js';
+import { GhError, ghCli, type GhApi } from './tracker/github.js';
 
 export interface PullRequest {
   number: number;
@@ -39,6 +40,15 @@ export interface CodeHost {
   updateBranch(number: number, sha: string): Promise<void>;
   // Deletes a branch on the host. Its commits stay reachable from the merged PR.
   deleteBranch(branch: string): Promise<void>;
+  // The files the PR changes at its head, with line counts.
+  files(number: number): Promise<ChangedFile[]>;
+  // A file's text on a branch, or undefined when it does not exist there.
+  readFile(path: string, ref: string): Promise<string | undefined>;
+  // Labels on the PR, and who added or removed each one when.
+  labels(number: number): Promise<string[]>;
+  labelEvents(number: number): Promise<LabelEvent[]>;
+  addLabel(number: number, label: string): Promise<void>;
+  removeLabel(number: number, label: string): Promise<void>;
 }
 
 export type MergeMethod = 'merge' | 'squash' | 'rebase';
@@ -117,5 +127,66 @@ export class GitHubCodeHost implements CodeHost {
 
   async deleteBranch(branch: string): Promise<void> {
     await this.gh({ method: 'DELETE', path: this.path(`git/refs/heads/${branch}`) });
+  }
+
+  async files(number: number): Promise<ChangedFile[]> {
+    const list = (await this.gh({ path: this.path(`pulls/${number}/files?per_page=100`), paginate: true })) as Array<{
+      filename: string;
+      previous_filename?: string;
+      additions: number;
+      deletions: number;
+    }>;
+    return list.map((f) => ({
+      path: f.filename,
+      ...(f.previous_filename ? { previousPath: f.previous_filename } : {}),
+      additions: f.additions,
+      deletions: f.deletions,
+    }));
+  }
+
+  async readFile(path: string, ref: string): Promise<string | undefined> {
+    try {
+      const res = (await this.gh({ path: this.path(`contents/${path}?ref=${encodeURIComponent(ref)}`) })) as { content?: string; encoding?: string };
+      return res.content === undefined ? undefined : Buffer.from(res.content, (res.encoding as BufferEncoding) ?? 'base64').toString('utf8');
+    } catch (e) {
+      if (e instanceof GhError && e.status === 404) return undefined;
+      throw e;
+    }
+  }
+
+  async labels(number: number): Promise<string[]> {
+    const list = (await this.gh({ path: this.path(`issues/${number}/labels?per_page=100`) })) as Array<{ name: string }>;
+    return list.map((l) => l.name);
+  }
+
+  async labelEvents(number: number): Promise<LabelEvent[]> {
+    const list = (await this.gh({ path: this.path(`issues/${number}/events?per_page=100`), paginate: true })) as Array<{
+      event: string;
+      label?: { name: string };
+      actor?: { login: string } | null;
+      performed_via_github_app?: { slug: string } | null;
+      created_at: string;
+    }>;
+    return list
+      .filter((e) => (e.event === 'labeled' || e.event === 'unlabeled') && e.label)
+      .map((e) => ({
+        event: e.event as LabelEvent['event'],
+        label: e.label!.name,
+        actor: e.actor?.login ?? 'ghost',
+        ...(e.performed_via_github_app ? { viaApp: e.performed_via_github_app.slug } : {}),
+        at: e.created_at,
+      }));
+  }
+
+  async addLabel(number: number, label: string): Promise<void> {
+    await this.gh({ method: 'POST', path: this.path(`issues/${number}/labels`), body: { labels: [label] } });
+  }
+
+  async removeLabel(number: number, label: string): Promise<void> {
+    try {
+      await this.gh({ method: 'DELETE', path: this.path(`issues/${number}/labels/${encodeURIComponent(label)}`) });
+    } catch (e) {
+      if (!(e instanceof GhError && e.status === 404)) throw e;
+    }
   }
 }

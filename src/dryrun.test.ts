@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { run } from './cli.js';
 import type { Check, CodeHost, PullRequest } from './codehost.js';
+import { RiskFakes } from './testing/fakes.js';
 import { loadConfig } from './config.js';
 import { Factory, RuleError } from './factory.js';
 import { applyMove, canEdit, canMove, canOpenPr, publicInterface, type Ticket } from './lifecycle.js';
@@ -13,12 +14,12 @@ import { MemoryTracker } from './tracker/memory.js';
 
 function ticket(over: Partial<Ticket> = {}): Ticket {
   return {
-    id: 10, title: 't', body: '', type: 'build', state: 'building', priority: 2, round: 0, risky: false,
+    id: 10, title: 't', body: '', type: 'build', state: 'building', priority: 2, round: 0, risk: 'low',
     testsReady: true, gates: {}, components: [], blockedBy: [], covers: ['AC-1'], spec: 1, closed: false, ...over,
   };
 }
 
-class FakeHost implements CodeHost {
+class FakeHost extends RiskFakes implements CodeHost {
   prs: PullRequest[] = [];
   checkRuns: Check[] = [];
   async findPr(branch: string) {
@@ -93,15 +94,15 @@ describe('Factory edit and PRs', () => {
     const host = new FakeHost();
     const f = new Factory(tracker, { codeHost: host });
     await f.create({ title: 'Spec', type: 'spec', body: 'AC-1' }, 'grill');
-    await f.create({ title: 'Add', spec: 1, covers: ['AC-1'], risky: true }, 'planner');
+    await f.create({ title: 'Add', spec: 1, covers: ['AC-1'], risk: 'high' }, 'planner');
     return { tracker, host, f };
   }
 
   it('edits only the given fields and says what changed', async () => {
     const { tracker, f } = await setup();
-    const t = await f.edit(2, { risky: false, blockedBy: [1] }, 'planner', 'Not auth after all.');
-    expect(t).toMatchObject({ risky: false, blockedBy: [1], title: 'Add' });
-    expect(tracker.posted.get(2)?.at(-1)).toContain('edited `risky`, `blockedBy`');
+    const t = await f.edit(2, { risk: 'low', blockedBy: [1] }, 'planner', 'Not auth after all.');
+    expect(t).toMatchObject({ risk: 'low', blockedBy: [1], title: 'Add' });
+    expect(tracker.posted.get(2)?.at(-1)).toContain('edited `risk`, `blockedBy`');
     await expect(f.edit(2, {}, 'planner')).rejects.toThrow(RuleError);
   });
 
@@ -165,10 +166,10 @@ describe('CLI', () => {
     expect(JSON.parse(lines.slice(lines.findLastIndex((l) => l.startsWith('{'))).join('\n'))).toMatchObject({ merged: true });
   });
 
-  it('merges a reviewed, green PR for the owner, and notes a risky one', async () => {
+  it('merges a reviewed, green PR for the owner, even a high-risk one, with no hold', async () => {
     const { exec, tracker, codeHost, lines } = await harness();
     const sha = 'a'.repeat(40);
-    await tracker.update({ ...(await tracker.get(2)), state: 'in-qa', pr: 7, reviewedSha: sha, risky: true });
+    await tracker.update({ ...(await tracker.get(2)), state: 'in-qa', pr: 7, reviewedSha: sha, risk: 'high' });
     codeHost.prs.push({ number: 7, url: 'u', head: 'ticket-2', headSha: sha, state: 'open', merged: false });
     codeHost.checkRuns = [{ name: 'test', url: 'u', status: 'completed', conclusion: 'failure' }];
     await expect(exec('merge 2 --as owner')).rejects.toThrow(/checks failed: test/);
@@ -180,16 +181,34 @@ describe('CLI', () => {
     expect(await tracker.get(2)).toMatchObject({ state: 'done', closed: true });
     const comment = tracker.posted.get(2)?.at(-1) ?? '';
     expect(comment).toContain(`PR #7 merged by the owner (merge) at the reviewed commit ${sha}`);
-    expect(comment).toContain('marked risky');
     expect(lines.at(-1)).toContain('#2');
   });
 
-  it('edits risk with --not-risky', async () => {
+  it('prints the tier a PR calls for, and why', async () => {
+    const { exec, tracker, codeHost, lines } = await harness();
+    await tracker.update({ ...(await tracker.get(2)), pr: 7 });
+    codeHost.riskYml = 'medium: [server.js]\ndefault: low\n';
+    codeHost.changed = [{ path: 'server.js', additions: 4, deletions: 0 }, { path: 'public/a.js', additions: 1, deletions: 0 }];
+    await exec('risk 2');
+    expect(lines.slice(-2)).toEqual([
+      "#2 is medium risk: the ticket says low, PR #7's changes under risk.yml say medium (5 changed lines).",
+      '- server.js: medium (matches `server.js`)',
+    ]);
+    await exec('risk 2 --json');
+    expect(JSON.parse(lines.at(-1)!.startsWith('{') ? lines.at(-1)! : lines.slice(lines.findLastIndex((l) => l.startsWith('{'))).join('\n'))).toMatchObject({ planner: 'low', diff: 'medium', tier: 'medium', lines: 5 });
+    // Showing the tier changes nothing.
+    expect((await tracker.get(2)).risk).toBe('low');
+  });
+
+  it('edits risk with --risk, and the old --risky and --not-risky', async () => {
     const { exec, tracker } = await harness();
     await exec('edit 2 --as planner --risky');
-    expect((await tracker.get(2)).risky).toBe(true);
+    expect((await tracker.get(2)).risk).toBe('high');
     await exec('edit 2 --as planner --not-risky');
-    expect((await tracker.get(2)).risky).toBe(false);
+    expect((await tracker.get(2)).risk).toBe('low');
+    await exec('edit 2 --as planner --risk medium');
+    expect((await tracker.get(2)).risk).toBe('medium');
+    await expect(exec('edit 2 --as planner --risk huge')).rejects.toThrow(/--risk must be one of low, medium, high/);
   });
 });
 
@@ -213,6 +232,17 @@ describe('config components', () => {
     expect(loadConfig(dir).reviewStatus).toBe('gate');
     writeFileSync(join(dir, 'factory.config.yml'), 'reviewStatus: nobody\n');
     expect(() => loadConfig(dir)).toThrow(/reviewStatus must be one of/);
+  });
+
+  it('reads the owner and the hold, and rejects bad ones', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'factory-'));
+    expect(loadConfig(dir)).toMatchObject({ owner: undefined, holdHours: 24 });
+    writeFileSync(join(dir, 'factory.config.yml'), 'owner: hoangtrankim\nholdHours: 4\n');
+    expect(loadConfig(dir)).toMatchObject({ owner: 'hoangtrankim', holdHours: 4 });
+    writeFileSync(join(dir, 'factory.config.yml'), 'holdHours: soon\n');
+    expect(() => loadConfig(dir)).toThrow(/holdHours must be a number/);
+    writeFileSync(join(dir, 'factory.config.yml'), 'owner: "two words"\n');
+    expect(() => loadConfig(dir)).toThrow(/owner must be a GitHub login/);
   });
 
   it('rejects a malformed map', () => {

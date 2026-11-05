@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { Check, CodeHost, PullRequest } from './codehost.js';
+import { RiskFakes } from './testing/fakes.js';
 import { Dispatcher, Lock } from './dispatch.js';
 import { Factory } from './factory.js';
 import { specStatus, type Ticket } from './lifecycle.js';
@@ -15,7 +16,7 @@ const SHA = '0123456789abcdef0123456789abcdef01234567';
 
 function ticket(over: Partial<Ticket> = {}): Ticket {
   return {
-    id: 10, title: 't', body: '', type: 'build', state: 'planned', priority: 2, round: 0, risky: false,
+    id: 10, title: 't', body: '', type: 'build', state: 'planned', priority: 2, round: 0, risk: 'low',
     testsReady: false, gates: {}, components: [], blockedBy: [], covers: ['AC-1'], spec: 1, closed: false, ...over,
   };
 }
@@ -39,8 +40,8 @@ describe('route', () => {
       [{ state: 'designed', testsReady: true }, 'builder'],
       [{ state: 'building', round: 1 }, 'builder'],
       [{ state: 'in-review', pr: 5 }, 'reviewer'],
-      [{ state: 'in-review', pr: 5, risky: true }, 'security'],
-      [{ state: 'in-review', pr: 5, risky: true, gates: { security: 'pass' } }, 'reviewer'],
+      [{ state: 'in-review', pr: 5, risk: 'medium' }, 'security'],
+      [{ state: 'in-review', pr: 5, risk: 'high', gates: { security: 'pass' } }, 'reviewer'],
     ];
     for (const [over, agent] of cases) {
       expect(route(snap([spec(), ticket(over)])), JSON.stringify(over)).toMatchObject({ agent, ticket: 10 });
@@ -114,7 +115,7 @@ describe('route', () => {
   });
 });
 
-class FakeHost implements CodeHost {
+class FakeHost extends RiskFakes implements CodeHost {
   prs = new Map<number, PullRequest>();
   checkRuns: Check[] = [{ name: 'test', status: 'completed', conclusion: 'success', url: 'u' }];
   async findPr() {
@@ -414,6 +415,188 @@ describe('Dispatcher.gate and steps (session dispatcher with a merge gate)', () 
     const r = await d.gate();
     expect(r.merged).toEqual([]);
     expect((await tracker.get(2)).state).toBe('needs-human');
+  });
+});
+
+describe('risk tiers', () => {
+  const HOUR = 3600 * 1000;
+  const T0 = Date.parse('2026-11-05T10:00:00Z');
+
+  async function toReview(opts: { changed?: Array<{ path: string; additions: number; deletions: number }>; riskYml?: string; risk?: 'low' | 'medium' | 'high' } = {}) {
+    const tracker = new MemoryTracker();
+    const host = new FakeHost();
+    let now = T0;
+    tracker.now = () => new Date(now);
+    if (opts.changed) host.changed = opts.changed;
+    if (opts.riskYml !== undefined) host.riskYml = opts.riskYml;
+    const factory = new Factory(tracker, { codeHost: host, reviewStatus: 'gate', owner: 'hoang', holdHours: 24, now: () => new Date(now) });
+    await factory.create({ title: 'Spec', type: 'spec', body: '- AC-1: x' }, 'grill');
+    await factory.create({ title: 'Add', spec: 1, covers: ['AC-1'], risk: opts.risk }, 'planner');
+    await factory.move(2, { to: 'designed', role: 'designer' });
+    await factory.markTestsReady(2, 'qa-writer');
+    await factory.move(2, { to: 'building', role: 'builder' });
+    await factory.move(2, { to: 'in-review', role: 'builder', pr: 5 });
+    const runner = new ScriptedRunner(async () => {
+      throw new Error('the gate never runs an agent');
+    });
+    const lines: string[] = [];
+    const d = new Dispatcher({ tracker, factory, codeHost: host, runner, cwd: '.', out: (s) => lines.push(s) });
+    const passReview = async () => {
+      if ((await tracker.get(2)).risk !== 'low') await factory.recordGate(2, 'security', 'pass', 'security');
+      await factory.move(2, { to: 'in-qa', role: 'reviewer', sha: SHA });
+      await factory.note(2, 'qa-reporter', `PASS at ${SHA}`);
+    };
+    const later = (hours: number) => {
+      now += hours * HOUR;
+    };
+    const label = (event: 'labeled' | 'unlabeled', name: string, actor = 'hoang', viaApp?: string) => {
+      host.events.push({ event, label: name, actor, at: new Date(now).toISOString(), ...(viaApp ? { viaApp } : {}) });
+      const have = host.prLabels.get(5) ?? [];
+      host.prLabels.set(5, event === 'labeled' ? [...have, name] : have.filter((l) => l !== name));
+    };
+    return { tracker, host, factory, d, lines, passReview, later, label };
+  }
+
+  it('raises the tier from the diff when the builder hands the PR in, and says why', async () => {
+    const { tracker } = await toReview({ changed: [{ path: 'server.js', additions: 3, deletions: 1 }], riskYml: 'medium: [server.js]\ndefault: low\n' });
+    expect((await tracker.get(2)).risk).toBe('medium');
+    expect(tracker.posted.get(2)?.join('\n')).toContain('raised the risk from `low` to `medium`');
+    expect(tracker.posted.get(2)?.join('\n')).toContain('server.js: medium (matches `server.js`)');
+  });
+
+  it('never lowers the planner\'s tier', async () => {
+    const { tracker } = await toReview({ risk: 'high' });
+    expect((await tracker.get(2)).risk).toBe('high');
+  });
+
+  it('routes a medium ticket to security first, and refuses a review pass without it', async () => {
+    const { d, factory, tracker } = await toReview({ changed: [{ path: 'lib/new.js', additions: 3, deletions: 0 }], riskYml: '' });
+    expect((await tracker.get(2)).risk).toBe('medium');
+    expect(await d.steps()).toMatchObject([{ agent: 'security', ticket: 2 }]);
+    await expect(factory.move(2, { to: 'in-qa', role: 'reviewer', sha: SHA })).rejects.toThrow(/medium risk and has not passed the security gate/);
+  });
+
+  it('raises the tier at the review pass when the PR changed during review', async () => {
+    const { host, factory, tracker } = await toReview();
+    host.changed = [{ path: '.github/workflows/ci.yml', additions: 1, deletions: 1 }];
+    await expect(factory.move(2, { to: 'in-qa', role: 'reviewer', sha: SHA })).rejects.toThrow(/high risk and has not passed the security gate/);
+    expect((await tracker.get(2)).risk).toBe('high');
+  });
+
+  it('merges a low ticket at once', async () => {
+    const { d, host, passReview } = await toReview();
+    await passReview();
+    expect(await d.gate()).toMatchObject({ merged: [2], held: [] });
+    expect(host.merges).toEqual([[5, SHA, 'merge']]);
+  });
+
+  it('sends a PR back to review when the gate finds it riskier than its passes cover', async () => {
+    const { d, host, tracker, passReview } = await toReview();
+    await passReview();
+    // risk.yml on main got stricter after the review.
+    host.riskYml = 'default: medium\n';
+    // A new gate run reads it afresh.
+    const factory = new Factory(tracker, { codeHost: host, reviewStatus: 'gate' });
+    const gate = new Dispatcher({ tracker, factory, codeHost: host, runner: new ScriptedRunner(async () => {}), cwd: '.' });
+    const r = await gate.gate();
+    expect(r.merged).toEqual([]);
+    expect(host.merges).toEqual([]);
+    expect(await tracker.get(2)).toMatchObject({ state: 'in-review', risk: 'medium' });
+    expect(tracker.posted.get(2)?.at(-1)).toContain('has not passed the security gate, so it goes back to review');
+  });
+
+  it('holds a high PR for 24 hours, tells the owner, then merges it', async () => {
+    const { d, host, tracker, passReview, later, lines } = await toReview({ risk: 'high' });
+    await passReview();
+    const first = await d.gate();
+    expect(first).toMatchObject({ merged: [], held: [{ ticket: 2, until: '2026-11-06T10:00:00.000Z' }] });
+    // One look per run: the held PR does not spin the gate.
+    expect(first.steps).toHaveLength(1);
+    expect(host.prLabels.get(5)).toEqual(['held']);
+    const note = tracker.posted.get(2)?.at(-1) ?? '';
+    expect(note).toContain(`Held at ${SHA}`);
+    expect(note).toContain('@hoang');
+    expect(note).toContain('merges at 2026-11-06 10:00 UTC');
+    later(23);
+    expect(await d.gate()).toMatchObject({ merged: [], held: [{ ticket: 2, until: '2026-11-06T10:00:00.000Z' }] });
+    expect(tracker.posted.get(2)?.filter((c) => c.includes('Held at'))).toHaveLength(1);
+    later(1);
+    expect(await d.gate()).toMatchObject({ merged: [2], held: [] });
+    expect(host.merges).toEqual([[5, SHA, 'merge']]);
+    expect(tracker.posted.get(2)?.at(-1)).toContain('High risk: merged after the 24-hour hold with no `hold`.');
+    expect(lines.join('\n')).toContain('held for the owner until 2026-11-06T10:00:00.000Z');
+  });
+
+  it('merges a held PR early when the owner approves it by hand', async () => {
+    const { d, host, tracker, passReview, later, label } = await toReview({ risk: 'high' });
+    await passReview();
+    await d.gate();
+    later(2);
+    label('labeled', 'approve');
+    expect(await d.gate()).toMatchObject({ merged: [2] });
+    expect(tracker.posted.get(2)?.at(-1)).toContain('merged early, approved by @hoang');
+    expect(host.merges).toHaveLength(1);
+  });
+
+  it('ignores and removes an approve from an agent or another account', async () => {
+    const { d, host, tracker, passReview, later, label } = await toReview({ risk: 'high' });
+    await passReview();
+    await d.gate();
+    later(2);
+    label('labeled', 'approve', 'hoang', 'claude');
+    expect(await d.gate()).toMatchObject({ merged: [] });
+    expect(host.prLabels.get(5)).toEqual(['held']);
+    expect(tracker.posted.get(2)?.at(-1)).toContain('took `approve` off PR #5: only @hoang');
+    label('labeled', 'approve', 'forge-bot', 'forge-bot');
+    expect(await d.gate()).toMatchObject({ merged: [] });
+    expect(host.merges).toEqual([]);
+  });
+
+  it('stops on hold, says so once, and restarts the clock when the hold comes off', async () => {
+    const { d, host, tracker, passReview, later, label } = await toReview({ risk: 'high' });
+    await passReview();
+    await d.gate();
+    later(1);
+    label('labeled', 'hold');
+    later(30);
+    expect(await d.gate()).toMatchObject({ merged: [], held: [{ ticket: 2, by: 'hoang' }] });
+    await d.gate();
+    expect(tracker.posted.get(2)?.filter((c) => c.includes('On hold at'))).toHaveLength(1);
+    expect(host.merges).toEqual([]);
+    label('unlabeled', 'hold');
+    later(23);
+    expect(await d.gate()).toMatchObject({ merged: [] });
+    later(1);
+    expect(await d.gate()).toMatchObject({ merged: [2] });
+  });
+
+  it('lets the owner send a held PR back to building', async () => {
+    const { d, factory, tracker, passReview, label } = await toReview({ risk: 'high' });
+    await passReview();
+    await d.gate();
+    label('labeled', 'hold');
+    await factory.move(2, { to: 'building', role: 'owner', reason: 'wrong-behavior', note: 'Keep the old route.' });
+    expect(await tracker.get(2)).toMatchObject({ state: 'building', round: 1 });
+  });
+
+  it('holds a new head from zero after a push sends it back through review', async () => {
+    const { d, host, tracker, passReview, later, label, factory } = await toReview({ risk: 'high' });
+    await passReview();
+    await d.gate();
+    later(2);
+    label('labeled', 'approve');
+    // The builder pushed before the approve could merge: a new head, reviewed again.
+    const NEW = 'e'.repeat(40);
+    host.prs.set(5, { number: 5, url: 'u', head: 'ticket-2', headSha: NEW, state: 'open', merged: false });
+    await d.gate();
+    expect((await tracker.get(2)).state).toBe('in-review');
+    await factory.move(2, { to: 'in-qa', role: 'reviewer', sha: NEW });
+    await factory.note(2, 'qa-reporter', `PASS at ${NEW}`);
+    later(1);
+    // The old approve is from before this hold, so it does not count.
+    expect(await d.gate()).toMatchObject({ merged: [], held: [{ ticket: 2 }] });
+    expect(tracker.posted.get(2)?.join('\n')).toContain(`Held at ${NEW}`);
+    expect(host.prLabels.get(5)).not.toContain('approve');
   });
 });
 

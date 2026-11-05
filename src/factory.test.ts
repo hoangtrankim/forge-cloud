@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { Factory, RuleError, type FactoryEvent } from './factory.js';
 import { MemoryTracker } from './tracker/memory.js';
+import { RiskFakes } from './testing/fakes.js';
 
 const SHA = '0123456789abcdef0123456789abcdef01234567';
 
@@ -15,8 +16,9 @@ beforeEach(() => {
 });
 
 async function specWithTicket(risky = false) {
+  const risk = risky ? ('high' as const) : ('low' as const);
   const spec = await factory.create({ title: 'Todo app', type: 'spec', body: '- AC-1: add\n- AC-2: delete' }, 'grill');
-  const t = await factory.create({ title: 'Add todo', spec: spec.id, covers: ['AC-1', 'AC-2'], risky }, 'planner');
+  const t = await factory.create({ title: 'Add todo', spec: spec.id, covers: ['AC-1', 'AC-2'], risk }, 'planner');
   return { spec, t };
 }
 
@@ -92,6 +94,7 @@ describe('Factory', () => {
     const statuses: string[][] = [];
     let head = 'f'.repeat(40);
     const host = {
+      ...new RiskFakes(),
       getPr: async (n: number) => ({ number: n, url: 'u', head: 'ticket-2', headSha: head, state: 'open' as const, merged: false }),
       setStatus: async (sha: string, context: string, state: string) => void statuses.push([sha, context, state]),
       checks: async () => [{ name: 'test', status: 'completed', conclusion: 'success', url: 'u' }],
@@ -113,6 +116,7 @@ describe('Factory', () => {
   it('hands a PR to review only once CI is green on its head', async () => {
     let checks: Array<{ name: string; status: string; conclusion: string | null; url: string }> = [];
     const host = {
+      ...new RiskFakes(),
       getPr: async (n: number) => ({ number: n, url: 'u', head: 'ticket-2', headSha: SHA, state: 'open' as const, merged: false }),
       checks: async () => checks,
     };
