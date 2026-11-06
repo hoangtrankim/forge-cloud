@@ -3,6 +3,10 @@
 # commit, it posts the factory/review status and merges the PR pinned to that commit. It also
 # marks merged tickets done, sends changed PRs back to review, and brings main into PRs behind it.
 #
+# Risk tiers (risk.yml): it checks each PR's tier again from its diff. A high-risk PR is held:
+# it merges after holdHours (factory.config.yml) unless the owner adds `hold` to the PR, and the
+# owner adding `approve` merges it at once. The hourly schedule is the hold's clock.
+#
 # It acts as the forge-bot GitHub App, so the branches it updates still start CI. Set two repo
 # secrets from that App: FORGE_BOT_APP_ID and FORGE_BOT_PRIVATE_KEY. Agents run elsewhere, in a
 # Claude session (see the forge-loop skill).
@@ -13,6 +17,10 @@ on:
     types: [labeled]
   issue_comment:
     types: [created]
+  # The owner's `approve` or `hold` on a held PR. pull_request_target runs this file as it is
+  # on main, and nothing below checks out the PR's code.
+  pull_request_target:
+    types: [labeled, unlabeled]
   workflow_run:
     workflows: [CI]
     types: [completed]
@@ -30,9 +38,12 @@ permissions:
 
 jobs:
   gate:
-    # Skip events that cannot make a merge due: other labels, and comments on plain issues.
+    # Skip events that cannot make a merge due: other labels on issues, and PR labels other
+    # than the owner's approve and hold.
     if: >-
-      github.event_name != 'issues' || startsWith(github.event.label.name, 'factory:')
+      (github.event_name != 'issues' && github.event_name != 'pull_request_target') ||
+      (github.event_name == 'issues' && startsWith(github.event.label.name, 'factory:')) ||
+      (github.event_name == 'pull_request_target' && contains(fromJSON('["approve","hold"]'), github.event.label.name))
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

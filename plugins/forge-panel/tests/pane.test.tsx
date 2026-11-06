@@ -30,7 +30,7 @@ const T = (id: number, state: string, more: Record<string, unknown> = {}) => ({
   state,
   priority: 2,
   round: 0,
-  risky: false,
+  risk: 'low',
   closed: state === 'done',
   ...more,
 })
@@ -94,7 +94,7 @@ test('the pane lists tickets by state with links, and the running agent with its
   const clock = mock.clock(on, { now: 1_000_000 })
   const ranIn: unknown[] = []
   on('ui.open', () => ({ value: { isPlaced: true } }) as never)
-  factoryRepo(on, [T(46, 'spec', { title: 'Filter todos by All, Active, Done' }), T(29, 'building', { round: 1, risky: true }), T(28, 'done')], ranIn)
+  factoryRepo(on, [T(46, 'spec', { title: 'Filter todos by All, Active, Done' }), T(29, 'building', { round: 1, risk: 'high' }), T(28, 'done')], ranIn)
   on('agent.spawn', () => ({ model: 'claude-sonnet-5-5', agentId: 'a1' }) as never)
   on('agent.list', () => ({ value: [{ id: 'a1', description: 'x', type: 'factory-builder', status: 'running' as AgentStatus }] }) as never)
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })

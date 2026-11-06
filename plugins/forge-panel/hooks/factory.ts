@@ -63,7 +63,8 @@ export function toRows(tickets: ReadonlyArray<Record<string, unknown>>, doneKept
       state: t.state,
       priority: typeof t.priority === 'number' ? t.priority : 2,
       round: typeof t.round === 'number' ? t.round : 0,
-      risky: t.risky === true,
+      // forge reports a tier now (risk: low|medium|high); older versions sent risky: true.
+      risky: t.risky === true || t.risk === 'high',
       closed: t.closed === true,
     }
     if (typeof t.pr === 'number') row.pr = t.pr

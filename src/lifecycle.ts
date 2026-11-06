@@ -3,6 +3,8 @@
 // Judgement lives in agent prompts, rules live here, state lives in the tracker.
 // Agents never set labels themselves; they ask the CLI, and the CLI asks this file.
 
+import { needsSecurity, type RiskTier } from './risk.js';
+
 export const BUILD_STATES = [
   'planned',
   'designed',
@@ -61,7 +63,8 @@ export interface Ticket {
   state: State;
   priority: Priority;
   round: number;
-  risky: boolean;
+  // low, medium or high. Medium and high need the security gate; high is held for the owner.
+  risk: RiskTier;
   testsReady: boolean;
   gates: Partial<Record<Gate, GateResult>>;
   components: string[];
@@ -105,7 +108,8 @@ export const RULES: readonly Rule[] = [
   // The PR got new commits after the review passed, so it needs a new review. Not a round.
   { from: 'in-qa', to: 'in-review', roles: ['system'], kind: 'side' },
   { from: 'in-review', to: 'building', roles: ['reviewer', 'security'], kind: 'send-back' },
-  { from: 'in-qa', to: 'building', roles: ['qa-reporter', 'system'], kind: 'send-back' },
+  // The owner may send back a held PR they put on hold.
+  { from: 'in-qa', to: 'building', roles: ['qa-reporter', 'system', 'owner'], kind: 'send-back' },
   // An acceptance test that does not test what its criterion says goes back to the qa-writer.
   { from: 'building', to: 'designed', roles: ['builder'], kind: 'send-back' },
   { from: 'in-review', to: 'designed', roles: ['reviewer'], kind: 'send-back' },
@@ -173,8 +177,8 @@ export function canMove(ticket: Ticket, req: MoveRequest, ctx: MoveContext = { o
     }
   }
   if (req.to === 'in-review' && !(req.pr ?? ticket.pr)) return refuse(`moving to in-review needs --pr`);
-  if (req.to === 'in-qa' && ticket.risky && ticket.gates.security !== 'pass') {
-    return refuse(`#${ticket.id} is risky and has not passed the security gate`);
+  if (req.to === 'in-qa' && needsSecurity(ticket.risk) && ticket.gates.security !== 'pass') {
+    return refuse(`#${ticket.id} is ${ticket.risk} risk and has not passed the security gate`);
   }
   if (req.to === 'in-qa' && !/^[0-9a-f]{40}$/.test(req.sha ?? '')) {
     return refuse(`passing a review needs --sha <the full commit you reviewed>`);

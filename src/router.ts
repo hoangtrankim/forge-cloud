@@ -2,6 +2,7 @@
 // tested. The dispatcher gathers the facts (tickets, spec coverage, PR state) and asks here.
 
 import type { Role, SpecStatus, Ticket } from './lifecycle.js';
+import { needsSecurity } from './risk.js';
 
 export type AgentRole = Exclude<Role, 'grill' | 'owner' | 'system'>;
 
@@ -94,7 +95,7 @@ export const ROUTES: readonly Rule[] = [
   },
   {
     name: 'security-gate',
-    match: (t) => build(t) && t.state === 'in-review' && t.risky && t.gates.security !== 'pass',
+    match: (t) => build(t) && t.state === 'in-review' && needsSecurity(t.risk) && t.gates.security !== 'pass',
     step: agent('security', ticketPrompt, 'security-gate'),
   },
   {
@@ -126,7 +127,8 @@ export const ROUTES: readonly Rule[] = [
 
 const byPriority = (a: Ticket, b: Ticket) => a.priority - b.priority || a.id - b.id;
 
-// `skip` holds "agent:ticket" keys the dispatcher has given up on (an agent run changed nothing).
+// `skip` holds "agent:ticket" keys the dispatcher has given up on (an agent run changed nothing),
+// and "merge:ticket" keys for held PRs it already looked at this pass.
 export function route(s: Snapshot, skip: ReadonlySet<string> = new Set()): Step | undefined {
   return routeAll(s, skip)[0];
 }
@@ -137,7 +139,7 @@ export function routeAll(s: Snapshot, skip: ReadonlySet<string> = new Set()): St
   const steps: Step[] = [];
   const taken = new Set<number>();
   const add = (step: Step) => {
-    if (taken.has(step.ticket) || (step.kind === 'agent' && skip.has(`${step.agent}:${step.ticket}`))) return;
+    if (taken.has(step.ticket) || skip.has(`${step.kind === 'agent' ? step.agent : step.kind}:${step.ticket}`)) return;
     taken.add(step.ticket);
     steps.push(step);
   };

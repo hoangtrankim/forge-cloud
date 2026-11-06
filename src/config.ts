@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { parse } from 'yaml';
 import { MERGE_METHODS, type MergeMethod } from './codehost.js';
 import { DEFAULT_MAX_ROUNDS } from './lifecycle.js';
+import { DEFAULT_HOLD_HOURS } from './risk.js';
 
 export interface Config {
   repo?: string;
@@ -21,6 +22,11 @@ export interface Config {
   // Who posts the factory/review commit status: the reviewer's pass (default), or the merge
   // gate right before it merges, for dispatchers that cannot write statuses (a cloud session).
   reviewStatus: ReviewStatusBy;
+  // The GitHub login whose `approve` label merges a held high-risk PR early (default: the
+  // repo's owner).
+  owner?: string;
+  // How long the gate holds a high-risk PR before it merges (default 24).
+  holdHours: number;
 }
 
 export type ReviewStatusBy = 'reviewer' | 'gate';
@@ -54,6 +60,11 @@ export function loadConfig(dir = process.cwd()): Config {
   if (!REVIEW_STATUS_BY.includes(reviewStatus as ReviewStatusBy)) {
     throw new Error(`${CONFIG_FILE}: reviewStatus must be one of ${REVIEW_STATUS_BY.join(', ')}`);
   }
+  const holdHours = Number(raw.holdHours ?? DEFAULT_HOLD_HOURS);
+  if (!Number.isFinite(holdHours) || holdHours < 0) throw new Error(`${CONFIG_FILE}: holdHours must be a number of hours`);
+  if (raw.owner !== undefined && (typeof raw.owner !== 'string' || !/^[\w-]+$/.test(raw.owner))) {
+    throw new Error(`${CONFIG_FILE}: owner must be a GitHub login`);
+  }
   return {
     repo: typeof raw.repo === 'string' ? raw.repo : undefined,
     maxRounds,
@@ -62,6 +73,8 @@ export function loadConfig(dir = process.cwd()): Config {
     claudeArgs: Array.isArray(raw.claudeArgs) ? raw.claudeArgs.map(String) : undefined,
     mergeMethod: mergeMethod as MergeMethod,
     reviewStatus: reviewStatus as ReviewStatusBy,
+    owner: raw.owner as string | undefined,
+    holdHours,
   };
 }
 

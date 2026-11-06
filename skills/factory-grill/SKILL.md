@@ -21,7 +21,7 @@ Ask **one question at a time**, most important first, and wait for the answer be
 2. **Scope**: what is in, and what is explicitly out?
 3. **Behaviour**: for each thing a user can do, what happens on success, on bad input, on empty data, and when something fails?
 4. **Data**: what is stored, for how long, who can see it, what happens on delete?
-5. **Risk**: does it touch login or sessions, permissions or other users' data, payments, secrets, personal data, or bulk or irreversible deletion? Say so plainly; those tickets will be marked risky and pass a security gate. A user deleting one of their own items is not risky.
+5. **Risk**: does it touch login or sessions, permissions or other users' data, payments, secrets, personal data, or bulk or irreversible deletion? Say so plainly; those tickets will be high risk: they pass a security gate and are then held for the owner for a day before they merge. A user deleting one of their own items is not high risk.
 6. **Constraints**: platforms, performance, accessibility, existing code to fit.
 
 Propose a default whenever the owner is unsure ("I'd suggest X; OK?") so the session keeps moving. Stop grilling when every behaviour has a testable outcome and nothing in your notes says "probably" or "TBD".

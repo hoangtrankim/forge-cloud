@@ -35,6 +35,7 @@ export interface DispatchReport {
   markedDone: number[];
   stuck: string[];
   needsHuman: number[];
+  held: GateReport['held'];
   stoppedBy: 'idle' | 'max-runs' | 'dry-run' | 'auth';
 }
 
@@ -44,7 +45,11 @@ export interface GateReport {
   merged: number[];
   markedDone: number[];
   needsHuman: number[];
+  // High-risk PRs the gate is holding for the owner, and until when (or who put them on hold).
+  held: Array<{ ticket: number; until?: string; by?: string }>;
 }
+
+type SystemReport = Pick<GateReport, 'merged' | 'markedDone' | 'held'>;
 
 export interface DispatcherDeps {
   tracker: Tracker;
@@ -61,7 +66,7 @@ export interface DispatcherDeps {
 const AUTH_FAILURE = /failed to authenticate|not logged in|invalid api key|please run \/login|oauth/i;
 
 const fingerprint = (t: Ticket | undefined) =>
-  t ? JSON.stringify([t.state, t.round, t.testsReady, t.gates, t.pr, t.reviewedSha, t.risky, t.blockedBy, t.closed]) : '';
+  t ? JSON.stringify([t.state, t.round, t.testsReady, t.gates, t.pr, t.reviewedSha, t.risk, t.blockedBy, t.closed]) : '';
 
 export class Dispatcher {
   constructor(private readonly d: DispatcherDeps) {}
@@ -94,14 +99,17 @@ export class Dispatcher {
 
   async run(opts: DispatchOptions = {}): Promise<DispatchReport> {
     const maxRuns = opts.maxRuns ?? 25;
-    const report: DispatchReport = { runs: [], merged: [], markedDone: [], stuck: [], needsHuman: [], stoppedBy: 'idle' };
+    const report: DispatchReport = { runs: [], merged: [], markedDone: [], stuck: [], needsHuman: [], held: [], stoppedBy: 'idle' };
     // "agent:ticket" -> the ticket's fingerprint when that agent last changed nothing.
     const gaveUp = new Map<string, string>();
+    // "merge:ticket" for held PRs already looked at; cleared before each wait in --watch.
+    const holding = new Set<string>();
 
     for (;;) {
       const snap = await this.snapshot();
       const byId = new Map(snap.tickets.map((t) => [t.id, t]));
       const skip = new Set([...gaveUp].filter(([k, fp]) => fingerprint(byId.get(Number(k.split(':')[1]))) === fp).map(([k]) => k));
+      for (const k of holding) skip.add(k);
       const step = route(snap, skip);
       Object.assign(report, waitingOnOwner(snap));
 
@@ -112,11 +120,12 @@ export class Dispatcher {
       }
       if (!step) {
         if (!opts.watch) return report;
+        holding.clear();
         await (this.d.sleep ?? sleep)(opts.intervalMs ?? 5 * 60 * 1000);
         continue;
       }
       if (step.kind !== 'agent') {
-        await this.runSystemStep(step, snap, report);
+        if (!(await this.runSystemStep(step, snap, report))) holding.add(`${step.kind}:${step.ticket}`);
         continue;
       }
       if (!opts.watch && report.runs.length >= maxRuns) {
@@ -150,14 +159,16 @@ export class Dispatcher {
   // The merge gate: runs every rule step that is due (merge, mark done, back to review, bring
   // main in), one per ticket, and never an agent. A session dispatcher runs the agents.
   async gate(opts: { dryRun?: boolean; maxSteps?: number } = {}): Promise<GateReport> {
-    const report: GateReport = { steps: [], merged: [], markedDone: [], needsHuman: [] };
+    const report: GateReport = { steps: [], merged: [], markedDone: [], needsHuman: [], held: [] };
+    // A held PR stays due until its hold ends; look at it once per run.
+    const holding = new Set<string>();
     // Each step changes its ticket, so the loop ends; the cap guards against a host that
     // reports the same facts after a step (a merge GitHub has not finished, say).
     for (let i = 0; i < (opts.maxSteps ?? 20); i++) {
       // A fresh look each time: merging one PR can leave another behind main.
       const snap = await this.snapshot();
       report.needsHuman = waitingOnOwner(snap).needsHuman;
-      const due = routeAll(snap).filter((s): s is Exclude<Step, { kind: 'agent' }> => s.kind !== 'agent');
+      const due = routeAll(snap, holding).filter((s): s is Exclude<Step, { kind: 'agent' }> => s.kind !== 'agent');
       if (opts.dryRun) {
         report.steps = due;
         return report;
@@ -165,12 +176,13 @@ export class Dispatcher {
       const step = due[0];
       if (!step) return report;
       report.steps.push(step);
-      await this.runSystemStep(step, snap, report);
+      if (!(await this.runSystemStep(step, snap, report))) holding.add(`${step.kind}:${step.ticket}`);
     }
     return report;
   }
 
-  private async runSystemStep(step: Exclude<Step, { kind: 'agent' }>, snap: Snapshot, report: Pick<DispatchReport, 'merged' | 'markedDone'>): Promise<void> {
+  // Returns false when the step changed nothing: a held PR that is not due yet.
+  private async runSystemStep(step: Exclude<Step, { kind: 'agent' }>, snap: Snapshot, report: SystemReport): Promise<boolean> {
     const t = snap.tickets.find((x) => x.id === step.ticket)!;
     if (step.kind === 'mark-done') {
       await this.d.factory.move(step.ticket, { to: 'done', role: 'system', note: `PR #${t.pr} is merged.` });
@@ -178,20 +190,33 @@ export class Dispatcher {
       if (head) await this.d.factory.dropBranch(step.ticket, head);
       report.markedDone.push(step.ticket);
       this.out(`#${step.ticket} done (PR #${t.pr} merged)`);
-      return;
+      return true;
     }
     if (step.kind === 'merge') {
       try {
-        await this.d.factory.merge(step.ticket, 'system');
-        report.merged.push(step.ticket);
-        this.out(`#${step.ticket} merged (PR #${t.pr}) and done`);
+        const r = await this.d.factory.gateMerge(step.ticket);
+        if (r.kind === 'merged') {
+          report.merged.push(step.ticket);
+          this.out(`#${step.ticket} merged (PR #${t.pr}) and done`);
+        } else if (r.kind === 'back-to-review') {
+          this.out(`#${step.ticket} is ${r.risk} risk without a security pass: back to review`);
+        } else if (r.kind === 'on-hold') {
+          report.held.push({ ticket: step.ticket, by: r.by });
+          this.out(`#${step.ticket} on hold (PR #${t.pr}, by @${r.by})`);
+          return false;
+        } else {
+          report.held.push({ ticket: step.ticket, until: r.until.toISOString() });
+          this.out(`#${step.ticket} held for the owner until ${r.until.toISOString()} (PR #${t.pr})`);
+          // Starting a hold labels the PR and comments, but the ticket is still due later.
+          return false;
+        }
       } catch (e) {
         // Behind main, a conflict, or a check the host still wants: a human decides.
         const why = e instanceof Error ? e.message : String(e);
         await this.d.factory.move(step.ticket, { to: 'needs-human', role: 'system', reason: `could not merge: ${why}` });
         this.out(`#${step.ticket} could not merge: ${why}`);
       }
-      return;
+      return true;
     }
     const head = snap.prs.get(step.ticket)?.headSha;
     if (step.kind === 're-review') {
@@ -201,7 +226,7 @@ export class Dispatcher {
         note: `PR #${t.pr} moved from the reviewed commit ${t.reviewedSha ?? '(none)'} to ${head}, so it needs a new review.`,
       });
       this.out(`#${step.ticket} back to review (PR #${t.pr} changed after its review)`);
-      return;
+      return true;
     }
     try {
       await this.d.codeHost.updateBranch(t.pr!, head!);
@@ -217,6 +242,7 @@ export class Dispatcher {
       await this.d.factory.move(step.ticket, { to: 'needs-human', role: 'system', reason: `could not bring main into PR #${t.pr}: ${why}` });
       this.out(`#${step.ticket} could not be updated with main: ${why}`);
     }
+    return true;
   }
 
   private async runAgent(step: Step & { kind: 'agent' }, before: Snapshot): Promise<RunRecord> {

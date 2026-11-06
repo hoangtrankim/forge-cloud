@@ -17,6 +17,7 @@ import { GUARD_LOG, appendGuardLog, guardLogLine, guardRanSince, runGuard } from
 import { clean, gitIn, type Git } from './clean.js';
 import { formatReport, loadLogs, reviewerReport } from './report.js';
 import { GitHubTracker } from './tracker/github.js';
+import { RISK_FILE, RISK_TIERS, isRiskTier, type RiskTier } from './risk.js';
 import type { Tracker } from './tracker/tracker.js';
 
 const USAGE = `Usage: forge <command> [options]
@@ -30,9 +31,11 @@ Commands
   next [--limit N]                        Tickets a builder may start now
   create --as R --title T [--body B | --body-file F] [--type spec]
          [--spec N --covers AC-1,AC-2] [--blocked-by 1,2] [--component C]...
-         [--priority p0..p3] [--risky]
+         [--priority p0..p3] [--risk low|medium|high]
   edit <id> --as planner|owner [--title T] [--body-file F] [--blocked-by 1,2]
-         [--component C]... [--covers AC-1] [--priority p0..p3] [--risky | --not-risky]
+         [--component C]... [--covers AC-1] [--priority p0..p3] [--risk low|medium|high]
+                                          (--risky is --risk high, --not-risky is --risk low)
+  risk <id>                               The risk tier the ticket's PR calls for under risk.yml, and why
   pr <id> --as builder [--title T] [--body-file F]   Open (or find) the PR for branch ticket-<id>
   diff <id>                               The diff of the ticket's PR
   checks <id>                             CI checks of the PR's head commit, and whether it is merged;
@@ -139,12 +142,23 @@ function priority(v: string | undefined): Priority | undefined {
   return Number(m[1]) as Priority;
 }
 
+function riskFlag(a: Args): RiskTier | undefined {
+  const r = flag(a, 'risk');
+  if (r !== undefined) {
+    if (!isRiskTier(r)) throw new UsageError(`--risk must be one of ${RISK_TIERS.join(', ')}`);
+    return r;
+  }
+  if (flag(a, 'risky') === 'true') return 'high';
+  if (flag(a, 'not-risky') === 'true') return 'low';
+  return undefined;
+}
+
 function summary(t: Ticket): string {
   const bits = [`#${t.id}`, t.state.padEnd(11), `p${t.priority}`, t.title];
   const extra = [
     t.type === 'spec' ? 'spec' : '',
     t.round ? `round ${t.round}` : '',
-    t.risky ? 'risky' : '',
+    t.type === 'build' && t.risk !== 'low' ? `${t.risk} risk` : '',
     t.testsReady ? 'tests-ready' : '',
     t.pr ? `PR #${t.pr}` : '',
   ].filter(Boolean);
@@ -192,6 +206,14 @@ export async function run(argv: string[], deps: Deps = {}): Promise<number> {
     baseBranch: config.base,
     mergeMethod: config.mergeMethod,
     reviewStatus: config.reviewStatus,
+    holdHours: config.holdHours,
+    get owner() {
+      try {
+        return config.owner ?? repo().split('/')[0];
+      } catch {
+        return config.owner;
+      }
+    },
     onEvent: (e) => log?.write('events', e),
   });
   const body = () => {
@@ -261,7 +283,6 @@ export async function run(argv: string[], deps: Deps = {}): Promise<number> {
       return 0;
 
     case 'edit': {
-      const risky = flag(a, 'risky') === 'true' ? true : flag(a, 'not-risky') === 'true' ? false : undefined;
       const list = (name: string) => (a.flags.has(name) ? flagAll(a, name) : undefined);
       print(
         await factory.edit(
@@ -270,7 +291,7 @@ export async function run(argv: string[], deps: Deps = {}): Promise<number> {
             title: flag(a, 'title'),
             body: body(),
             priority: priority(flag(a, 'priority')),
-            risky,
+            risk: riskFlag(a),
             components: list('component'),
             blockedBy: list('blocked-by')?.map((v) => id(v, '--blocked-by')),
             covers: list('covers'),
@@ -292,6 +313,17 @@ export async function run(argv: string[], deps: Deps = {}): Promise<number> {
     case 'diff':
       out(await factory.diff(id(rest[0])));
       return 0;
+
+    case 'risk': {
+      const { ticket, assessment, tier } = await factory.assessTicket(id(rest[0]));
+      if (json) {
+        out(JSON.stringify({ ticket: ticket.id, planner: ticket.risk, diff: assessment.tier, tier, lines: assessment.lines, reasons: assessment.reasons }, null, 2));
+        return 0;
+      }
+      out(`#${ticket.id} is ${tier} risk: the ticket says ${ticket.risk}, PR #${ticket.pr}'s changes under ${RISK_FILE} say ${assessment.tier} (${assessment.lines} changed lines).`);
+      for (const r of assessment.reasons) out(`- ${r}`);
+      return 0;
+    }
 
     case 'checks': {
       const result = await factory.checks(id(rest[0]));
@@ -333,7 +365,7 @@ export async function run(argv: string[], deps: Deps = {}): Promise<number> {
             body: body() ?? '',
             type,
             priority: priority(flag(a, 'priority')),
-            risky: flag(a, 'risky') === 'true',
+            risk: riskFlag(a),
             components: flagAll(a, 'component'),
             blockedBy: flagAll(a, 'blocked-by').map((v) => id(v, '--blocked-by')),
             covers: flagAll(a, 'covers'),
@@ -481,6 +513,7 @@ export async function run(argv: string[], deps: Deps = {}): Promise<number> {
         if (r.merged.length) out(`Merged: ${r.merged.map((n) => `#${n}`).join(', ')}`);
         if (r.markedDone.length) out(`Done: ${r.markedDone.map((n) => `#${n}`).join(', ')}`);
         if (r.needsHuman.length) out(`Waiting on a human: ${r.needsHuman.map((n) => `#${n}`).join(', ')}`);
+        for (const h of r.held) out(h.by ? `On hold: #${h.ticket} (by @${h.by})` : `Held for the owner: #${h.ticket} until ${h.until}`);
       }
       return 0;
     }
@@ -530,6 +563,7 @@ export async function run(argv: string[], deps: Deps = {}): Promise<number> {
             if (r.markedDone.length) out(`Done: ${r.markedDone.map((n) => `#${n}`).join(', ')}`);
           }
           if (r.needsHuman.length) out(`Waiting on a human: ${r.needsHuman.map((n) => `#${n}`).join(', ')}`);
+          for (const h of r.held) out(h.by ? `On hold: #${h.ticket} (by @${h.by})` : `Held for the owner: #${h.ticket} until ${h.until}`);
           if (r.stuck.length) out(`Stuck (agent changed nothing): ${r.stuck.join(', ')}`);
         }
       } finally {
