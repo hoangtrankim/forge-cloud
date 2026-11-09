@@ -38,6 +38,10 @@ permissions:
 
 jobs:
   gate:
+    # forge leaves checks of this name out when it judges a PR's CI: a gate run started by a
+    # PR label shows up as a check on that PR, and one cancelled by the concurrency group
+    # would otherwise look like red CI.
+    name: forge-gate
     # Skip events that cannot make a merge due: other labels on issues, and PR labels other
     # than the owner's approve and hold.
     if: >-

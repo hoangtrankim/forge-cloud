@@ -125,7 +125,7 @@ The tier is the strictest of two views, and neither can lower the other. The pla
 - the PR has the `hold` label (from anyone): it waits, and says so once. Taking `hold` off restarts the clock. To send it back instead, run `forge move N building --as owner --reason <reason> --note "<what to change>"` from a terminal.
 - the owner added `approve` by hand after the hold started: it merges on the next gate run (the label starts one). An `approve` added through an app (a Claude session, forge-bot) or by anyone else is taken off with a comment; one from before a new commit does not count.
 
-A new commit restarts everything: review, QA and a fresh hold. `owner` (default: the repo owner) and `holdHours` live in `factory.config.yml`.
+The gate never counts its own runs as CI: a gate run started by a PR label is itself a check on that PR, so `forge` leaves out the check of the run it is in and any check named `forge-gate` (the gate's job name). A new commit restarts everything: review, QA and a fresh hold. `owner` (default: the repo owner) and `holdHours` live in `factory.config.yml`.
 
 ## Run it
 

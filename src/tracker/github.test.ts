@@ -194,3 +194,20 @@ describe('GitHubCodeHost risk and labels', () => {
     await host.removeLabel(5, 'approve');
   });
 });
+
+describe('GitHubCodeHost checks', () => {
+  it('leaves out the check of the Actions run it is part of, and the gate job\'s own checks', async () => {
+    const { gh } = fakeGh({
+      'GET repos/o/r/pulls/5': () => ({ number: 5, html_url: 'u', head: { ref: 'ticket-2', sha: 'abc' }, state: 'open', merged_at: null }),
+      'GET repos/o/r/commits/abc/check-runs?per_page=100': () => ({
+        check_runs: [
+          { name: 'test', status: 'completed', conclusion: 'success', html_url: 'https://github.com/o/r/actions/runs/11/job/1' },
+          { name: 'gate', status: 'in_progress', conclusion: null, html_url: 'https://github.com/o/r/actions/runs/22/job/2' },
+          { name: 'forge-gate', status: 'completed', conclusion: 'cancelled', html_url: 'https://github.com/o/r/actions/runs/33/job/3' },
+        ],
+      }),
+    });
+    expect((await new GitHubCodeHost('o/r', gh, 22).checks(5)).map((c) => c.name)).toEqual(['test']);
+    expect((await new GitHubCodeHost('o/r', gh, undefined).checks(5)).map((c) => c.name)).toEqual(['test', 'gate']);
+  });
+});
