@@ -33,6 +33,8 @@ describe('init', () => {
     // Held PRs need a clock, and the owner's labels on a PR start a run.
     expect(workflow).toContain("cron: '17 * * * *'");
     expect(workflow).toContain('pull_request_target');
+    // forge ignores checks of this name (GATE_CHECK in codehost.ts).
+    expect(workflow).toContain('name: forge-gate');
   });
 
   it('installs a starter risk.yml that forge can read', async () => {

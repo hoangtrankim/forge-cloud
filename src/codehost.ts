@@ -51,6 +51,9 @@ export interface CodeHost {
   removeLabel(number: number, label: string): Promise<void>;
 }
 
+// The merge gate's job name in forge-gate.yml. Its own runs are never CI for a PR.
+export const GATE_CHECK = 'forge-gate';
+
 export type MergeMethod = 'merge' | 'squash' | 'rebase';
 export const MERGE_METHODS: readonly MergeMethod[] = ['merge', 'squash', 'rebase'];
 
@@ -77,6 +80,8 @@ export class GitHubCodeHost implements CodeHost {
   constructor(
     private readonly repo: string,
     private readonly gh: GhApi = ghCli,
+    // The Actions run this process is part of, if any (GITHUB_RUN_ID).
+    private readonly ownRunId: number | undefined = Number(process.env.GITHUB_RUN_ID) || undefined,
   ) {}
 
   private path(p: string) {
@@ -107,10 +112,16 @@ export class GitHubCodeHost implements CodeHost {
     const res = (await this.gh({ path: this.path(`commits/${pr.headSha}/check-runs?per_page=100`) })) as {
       check_runs: Array<{ name: string; status: string; conclusion: string | null; html_url: string }>;
     };
-    return res.check_runs.map((c) => {
-      const run = /\/actions\/runs\/(\d+)/.exec(c.html_url)?.[1];
-      return { name: c.name, status: c.status, conclusion: c.conclusion, url: c.html_url, ...(run ? { runId: Number(run) } : {}) };
-    });
+    return (
+      res.check_runs
+        .map((c): Check => {
+          const run = /\/actions\/runs\/(\d+)/.exec(c.html_url)?.[1];
+          return { name: c.name, status: c.status, conclusion: c.conclusion, url: c.html_url, ...(run ? { runId: Number(run) } : {}) };
+        })
+        // A gate run started by a PR label is itself a check on that PR, still running while
+        // it looks. Counting it would make the gate wait for itself forever.
+        .filter((c) => c.name !== GATE_CHECK && (!this.ownRunId || c.runId !== this.ownRunId))
+    );
   }
 
   async setStatus(sha: string, context: string, state: 'success' | 'failure' | 'pending', description: string): Promise<void> {
