@@ -50,7 +50,7 @@ forge pr N --as builder --body-file /tmp/factory/builder-N.md
 
 The PR body starts with `Spec: #S`, then lists each covered `AC-n` and the test that checks it, then the catalog patterns used and where, then anything the reviewer should know. The CLI adds `Ticket: #N`. Do not write "Closes #N"; the factory closes tickets.
 
-6. Wait for CI on the PR head (`gh run watch` on the PR's run, or `forge checks N` until every check is completed). If a check is red, read its log (`gh run view <run> --log-failed`), fix it, push, and wait again.
+6. Wait for CI on the PR head with one command: `forge checks N --wait`. It looks again by itself until every check has finished (20 minutes at most) and ends with a `Result:` line. Exit 0 means all passed, 3 means a check failed, 4 means still running when the time ran out. Never write a wait loop of your own (`until`, `while`, `sleep`, or a `grep` on the output): one that guesses the wording never ends. If a check failed, read its log (`gh run view <run> --log-failed`), fix it, push, and wait again. On exit 4, run it once more; if it is 4 again, stop and report that CI is not finishing.
 7. Move it to review: `forge move N in-review --as builder --pr <number>`. The CLI refuses while a check on the PR head is missing, running or red; that is not something to work around.
 
 ## A flawed acceptance test

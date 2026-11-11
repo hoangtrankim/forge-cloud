@@ -38,8 +38,11 @@ Commands
   risk <id>                               The risk tier the ticket's PR calls for under risk.yml, and why
   pr <id> --as builder [--title T] [--body-file F]   Open (or find) the PR for branch ticket-<id>
   diff <id>                               The diff of the ticket's PR
-  checks <id>                             CI checks of the PR's head commit, and whether it is merged;
-                                          exit 3 if any failed, 4 if pending or none yet
+  checks <id> [--wait] [--timeout MIN]    CI checks of the PR's head commit, and whether it is merged;
+                                          exit 0 all passed, 3 if any failed, 4 if pending or none
+                                          yet. --wait looks again every 15 seconds until they pass
+                                          or one fails, at most MIN minutes (default 20). Wait with
+                                          this, never with a shell loop of your own.
   merge <id> --as owner                   Merge the reviewed commit once every check is green, mark done
                                           (the dispatcher does this itself after the QA report)
   move <id> <state> --as R [--reason R] [--note N | --note-file F] [--pr N] [--sha SHA]
@@ -87,7 +90,7 @@ interface Args {
   flags: Map<string, string[]>;
 }
 
-const BOOLEAN_FLAGS = new Set(['risky', 'not-risky', 'json', 'all', 'help', 'force', 'comments', 'dry-run', 'watch', 'changed', 'failed', 'local']);
+const BOOLEAN_FLAGS = new Set(['risky', 'not-risky', 'json', 'all', 'help', 'force', 'comments', 'dry-run', 'watch', 'changed', 'failed', 'local', 'wait']);
 
 export function parseArgs(argv: string[]): Args {
   const positional: string[] = [];
@@ -165,6 +168,9 @@ function summary(t: Ticket): string {
   return bits.join('  ') + (extra.length ? `  [${extra.join(', ')}]` : '');
 }
 
+// How often `forge checks --wait` looks again.
+const CHECKS_POLL_MS = 15_000;
+
 export interface Deps {
   tracker?: Tracker;
   codeHost?: CodeHost;
@@ -176,6 +182,7 @@ export interface Deps {
   git?: Git;
   gitRun?: GitRun;
   env?: NodeJS.ProcessEnv;
+  sleep?: (ms: number) => Promise<void>;
 }
 
 export async function run(argv: string[], deps: Deps = {}): Promise<number> {
@@ -326,7 +333,27 @@ export async function run(argv: string[], deps: Deps = {}): Promise<number> {
     }
 
     case 'checks': {
-      const result = await factory.checks(id(rest[0]));
+      const wait = flag(a, 'wait') === 'true';
+      const minutes = Number(flag(a, 'timeout') ?? 20);
+      if (!Number.isFinite(minutes) || minutes <= 0) throw new UsageError('--timeout takes minutes, a number above 0');
+      const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+      const clock = () => (deps.now?.() ?? new Date()).getTime();
+      const deadline = clock() + minutes * 60_000;
+      // 0 all passed, 3 one failed, 4 still running or none yet.
+      const verdict = (checks: Array<{ status: string; conclusion: string | null }>) =>
+        checks.some((c) => c.conclusion && !PASSED_CONCLUSIONS.includes(c.conclusion)) ? 3 : !checks.length || checks.some((c) => c.status !== 'completed') ? 4 : 0;
+      let result = await factory.checks(id(rest[0]));
+      let code = verdict(result.checks);
+      let timedOut = false;
+      while (wait && code === 4) {
+        if (clock() >= deadline) {
+          timedOut = true;
+          break;
+        }
+        await sleep(CHECKS_POLL_MS);
+        result = await factory.checks(id(rest[0]));
+        code = verdict(result.checks);
+      }
       const { checks } = result;
       if (json) out(JSON.stringify(result, null, 2));
       else {
@@ -336,10 +363,18 @@ export async function run(argv: string[], deps: Deps = {}): Promise<number> {
             ? checks.map((c) => `${(c.conclusion ?? c.status).padEnd(10)} ${c.name}${c.runId ? `  run ${c.runId}` : ''}  ${c.url}`).join('\n')
             : '(no checks yet)',
         );
+        // One plain last line, so nobody has to guess the result from the rows above.
+        out(
+          code === 0
+            ? 'Result: all checks passed (exit 0).'
+            : code === 3
+              ? 'Result: a check failed (exit 3).'
+              : timedOut
+                ? `Result: checks still running after ${minutes} minutes; stopped waiting (exit 4).`
+                : 'Result: checks still running or none yet (exit 4).',
+        );
       }
-      if (checks.some((c) => c.conclusion && !PASSED_CONCLUSIONS.includes(c.conclusion))) return 3;
-      if (!checks.length || checks.some((c) => c.status !== 'completed')) return 4;
-      return 0;
+      return code;
     }
 
     case 'merge':

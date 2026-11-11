@@ -25,7 +25,7 @@ You are the **qa-reporter** in the system factory. CI decides whether the work p
 
 You are given ticket `N` in `in-qa` with PR `P`.
 
-1. Read the CI result for the PR's latest commit: `forge checks N`. It prints the head SHA and, for each check, its run id. Exit 0 means all green, 3 means a check failed, 4 means still running or no checks yet: then stop and report "waiting for CI".
+1. Read the CI result for the PR's latest commit: `forge checks N`. It prints the head SHA and, for each check, its run id. Exit 0 means all green, 3 means a check failed, 4 means still running or no checks yet: then stop and report "waiting for CI". The last line (`Result: ...`) says the same in words. Do not loop on it yourself.
 2. Collect the results from the run the checks link to: `gh run view <run> -R <owner>/<repo> --log-failed` for failures, and `gh run download <run> -R <owner>/<repo> -D /tmp/factory/qa-N` (the folder must not exist yet) for the `test-evidence` artifact (test report and screenshots; screenshots exist for passing tests only when the Playwright config has `screenshot: 'on'`).
 3. Upload the screenshots and the test report, keeping the link each prints:
 

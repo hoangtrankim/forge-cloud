@@ -307,7 +307,7 @@ forge logs push                            # copy this machine's logs to the fac
 forge interface N                          # the design note's Public interface only
 forge pr N --as builder --body-file F      # open or find the PR for branch ticket-N
 forge diff N                               # the PR's diff
-forge checks N                             # CI on the PR head, and whether it is merged; exit 3 failed, 4 pending
+forge checks N [--wait] [--timeout MIN]     # CI on the PR head, and whether it is merged; exit 3 failed, 4 pending; --wait blocks until done (20 min default)
 forge merge N --as owner                   # merge the reviewed, green PR now and mark the ticket done
 forge clean [--dry-run]                    # remove local worktrees and ticket-N branches of done tickets
 forge steps [--limit N]                    # the next agent steps, for the forge-loop session

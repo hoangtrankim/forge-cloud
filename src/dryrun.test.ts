@@ -158,12 +158,57 @@ describe('CLI', () => {
     expect(await exec('checks 2')).toBe(4);
     codeHost.checkRuns = [{ ...c, status: 'completed', conclusion: 'success' }];
     expect(await exec('checks 2')).toBe(0);
+    expect(lines.at(-1)).toBe('Result: all checks passed (exit 0).');
     expect(lines.join('\n')).toContain('PR #7 at abc123');
     codeHost.checkRuns = [];
     expect(await exec('checks 2')).toBe(4);
     codeHost.prs[0]!.merged = true;
     await exec('checks 2 --json');
     expect(JSON.parse(lines.slice(lines.findLastIndex((l) => l.startsWith('{'))).join('\n'))).toMatchObject({ merged: true });
+  });
+
+  it('checks --wait looks again until CI finishes, and gives up at the timeout', async () => {
+    const { tracker, codeHost, lines, cwd } = await harness();
+    await tracker.update({ ...(await tracker.get(2)), pr: 7 });
+    codeHost.prs.push({ number: 7, url: 'u', head: 'ticket-2', headSha: 'abc123', state: 'open', merged: false });
+    const c = { name: 'test', url: 'u' };
+    let t = 0;
+    let sleeps = 0;
+    const exec = (cmd: string, onSleep: () => void) =>
+      run(cmd.split(' '), {
+        tracker,
+        codeHost,
+        out: (s) => lines.push(s),
+        cwd,
+        now: () => new Date(t),
+        sleep: async (ms) => {
+          t += ms;
+          sleeps++;
+          onSleep();
+        },
+      });
+
+    codeHost.checkRuns = [{ ...c, status: 'in_progress', conclusion: null }];
+    const green = () => {
+      if (sleeps === 3) codeHost.checkRuns = [{ ...c, status: 'completed', conclusion: 'success' }];
+    };
+    expect(await exec('checks 2 --wait', green)).toBe(0);
+    expect(sleeps).toBe(3);
+    expect(lines.at(-1)).toBe('Result: all checks passed (exit 0).');
+
+    codeHost.checkRuns = [{ ...c, status: 'queued', conclusion: null }];
+    sleeps = 0;
+    const red = () => {
+      if (sleeps === 1) codeHost.checkRuns = [{ ...c, status: 'completed', conclusion: 'failure' }];
+    };
+    expect(await exec('checks 2 --wait', red)).toBe(3);
+    expect(lines.at(-1)).toBe('Result: a check failed (exit 3).');
+
+    codeHost.checkRuns = [{ ...c, status: 'in_progress', conclusion: null }];
+    sleeps = 0;
+    expect(await exec('checks 2 --wait --timeout 1', () => {})).toBe(4);
+    expect(sleeps).toBe(4);
+    expect(lines.at(-1)).toBe('Result: checks still running after 1 minutes; stopped waiting (exit 4).');
   });
 
   it('merges a reviewed, green PR for the owner, even a high-risk one, with no hold', async () => {
